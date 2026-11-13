@@ -231,8 +231,17 @@ public:
         // closest to the reference, releasing the constraints that hold the step back and that no level
         // needs.
         for (Index h = 0; !equalities_only && changes_ < settings_.max_changes && h <= levels_; ++h) {
-            if (h < levels_ && activate_violated(h) > 0) {
-                forward();
+            phase_ = h;
+            if (h < levels_) {
+                // A level left out of the factorization during an earlier phase comes back now.
+                const bool appended = lq_.factored() == h;
+                if (appended) {
+                    lq_.append(factored_rows(), active_, h == 0 ? 0 : level_ends_(h - 1), level_ends_(h),
+                               noise_);
+                }
+                if (activate_violated(h) > 0 || appended) {
+                    forward();
+                }
             }
             while (changes_ < settings_.max_changes) {
                 // Add the first constraint that blocks the step from the iterate to the active set's
@@ -285,6 +294,14 @@ public:
             }
         }
 
+        if (lq_.factored() < levels_) {
+            // Stopped early: the accessors need every level.
+            while (lq_.factored() < levels_) {
+                const Index k = lq_.factored();
+                lq_.append(factored_rows(), active_, k == 0 ? 0 : level_ends_(k - 1), level_ends_(k), noise_);
+            }
+            forward();
+        }
         solution_ = point_;
         auto values = values_.head(rows_);
         values.noalias() = matrix_.topRows(rows_) * solution_;
@@ -429,13 +446,23 @@ private:
         }
     }
 
+    /// Phase h needs only levels <= h: the levels below leave the factorization before the first change,
+    /// which then no longer updates their rows, and come back in their own phase.
+    void trim() noexcept {
+        if (phase_ + 1 < lq_.factored()) {
+            lq_.truncate(phase_);
+        }
+    }
+
     void activate(Index row, bool at_lower) noexcept {
+        trim();
         active_(row) = true;
         lower_side_(row) = at_lower;
         lq_.insert(factored_rows(), row, level_of(row), noise_);
     }
 
     void deactivate(Index row) noexcept {
+        trim();
         active_(row) = false;
         locked_(row) = false;
         lq_.remove(row, noise_);
@@ -505,6 +532,7 @@ private:
     bool has_problem_ = false;
     bool scaled_valid_ = false;
     bool identity_metric_ = true;
+    Index phase_ = 0;  // level being solved, or levels_ for the choice among the optima
     Status status_ = Status::NoProblem;
     Settings<Scalar> settings_;
     Index changes_ = 0;

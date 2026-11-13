@@ -253,7 +253,7 @@ $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the curr
 
 0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$.
 1. **For $h = 1, \dots, m + 1$:** phase $m + 1$ is the final choice among the optima (§6).
-   1. **Activate violated rows** (levels only). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
+   1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
       $$
       t_i = \operatorname{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}
@@ -268,7 +268,7 @@ $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the curr
 - **Sign test.** Take a row at its upper bound in subproblem (9), with the inequality $a_i x \le u_i$ in the Lagrangian as $\mu_i (a_i x - u_i)$, $\mu_i \ge 0$. Then $\mu_i = \lambda_i$, so the condition is $\sigma_i \lambda_i \ge 0$; the lower side is symmetric. For a row of level $h$, $\sigma_i \rho_i \ge 0$ says the row is on, or beyond, its bound on the side it is active for.
 - **Locking.** If $\sigma_i \lambda_i > z_h$ at level $h$, moving the row off its bound strictly increases $f_h$, so it must stay there for all lower levels. If $\lvert \lambda_i \rvert \le z_h$, level $h$ does not care, and a lower level may still release the row (Example 2). A threshold that does not scale with the multipliers locks rounding noise: in single precision, a multiplier that is $10^{-5}$ only because the others are $10^2$ would lock a bound that a lower level must release.
 - **The last phase.** The working set's solution is the point closest to the reference within the affine set of its active rows, but the optimal set may be larger: an inactive-at-every-level constraint (zero multipliers everywhere) may hold the solution away from the reference. Phase $m + 1$ releases those, with the same ratio test.
-- **Which levels take part.** Rows of levels $> h$ in $W$ (for example lower-level equalities) stay in the factorization and in $\bar x$. They take part in the ratio and drop tests only from their own phase on; this keeps a warm start from the optimal active set at zero changes.
+- **Which levels take part.** Rows of levels $> h$ in $W$ (for example lower-level equalities) take part in the ratio and drop tests only from their own phase on. They stay in the factorization and in $\bar x$ until phase $h$ changes $W$, which keeps a warm start from the optimal active set at zero changes. At the first change they leave the factorization (dropping the positions after level $h$ costs nothing), so that the updates of §12 no longer rotate them and §5 no longer solves them, and each level comes back in its own phase. Phase $h$ needs nothing from them: its ratio test, its drop test and the multipliers of its subproblem involve only levels $\le h$, and its $\bar x$, the solution of levels $\le h$ closest to the reference, is as good a target as any other point of their optimal set.
 
 ### 10. Example 2 (a drop decided two levels below)
 
@@ -340,7 +340,7 @@ The structure keeps this cheap: after a removal each row has one coordinate to a
 
 ### 13. Cost
 
-For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with $t$ rows after it:
+For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with $t$ rows after it (in phase $h$, only rows of levels $\le h$ are in the factorization):
 
 | operation | cost |
 |---|---|
