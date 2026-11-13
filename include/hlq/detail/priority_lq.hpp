@@ -188,9 +188,9 @@ public:
     /**
      * Makes a problem row active and updates the positions after it.
      *
-     * The row goes after the independent rows of its level. Its coefficients on every direction take two
-     * passes; the positions after it keep their coefficients on the directions before it and are brought back
-     * to echelon form by Givens rotations.
+     * The row goes after the independent rows of its level. Its coefficients on every direction take one
+     * pass, or two when the first cancels most of the row; the positions after it keep their coefficients on
+     * the directions before it and are brought back to echelon form by Givens rotations.
      */
     template <typename Rows>
     void insert(const Rows& rows, Index row, Index level, const LevelsVector& noise) {
@@ -199,13 +199,17 @@ public:
         const Index tail = size - p;
 
         auto coef = scratch_.head(size);
-        auto second = second_.head(size);
         fresh_ = rows.row(row).transpose();
+        const Scalar length = fresh_.squaredNorm();
         coef.noalias() = basis_.topRows(size) * fresh_;
         fresh_.noalias() -= basis_.topRows(size).transpose() * coef;
-        second.noalias() = basis_.topRows(size) * fresh_;
-        coef += second;
-        fresh_.noalias() -= basis_.topRows(size).transpose() * second;
+        if (fresh_.squaredNorm() < Scalar(0.5) * length) {
+            // The first pass cancelled most of the row: a second one restores orthogonality.
+            auto second = second_.head(size);
+            second.noalias() = basis_.topRows(size) * fresh_;
+            coef += second;
+            fresh_.noalias() -= basis_.topRows(size).transpose() * second;
+        }
         const Scalar outside = fresh_.norm();
 
         // The positions from p on, in coordinates: the directions after p, plus the new one if any.
