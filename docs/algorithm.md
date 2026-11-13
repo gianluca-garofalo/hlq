@@ -353,7 +353,7 @@ For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with 
 | ratio test (15) | $O(m n)$ over the inactive rows of the levels involved |
 | storage | $O(M^2 + M n)$, allocated once by the constructor |
 
-Measured on the families of §18 (see the README for the full table), cold solves from data to solution take about half the time of HierarchicalQP and LexLS on the large family (20–40 variables), and about the same on small problems. DAQP, a dual method, is faster still, at an accuracy of about $10^{-6}$.
+Measured on the families of §18 (see the README for the full table), cold solves from data to solution take about a quarter of the time of HierarchicalQP and LexLS on the large family (20–40 variables), and about the same on small problems. DAQP, a dual method, is faster still, at an accuracy of about $10^{-6}$: hlq makes fewer active-set changes, but each one costs more, since it keeps $\hat Q$ (vectors of length $n$) where DAQP keeps only the LDL factors of the Gram matrix (§4).
 
 ### 14. Why the rank threshold is absolute
 
