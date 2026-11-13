@@ -47,3 +47,26 @@ function(hlq_find_gtest)
         SYSTEM)
     FetchContent_MakeAvailable(googletest)
 endfunction()
+
+# Google Benchmark for the benchmarks.
+function(hlq_find_benchmark)
+    if(TARGET benchmark::benchmark_main)
+        return()
+    endif()
+    find_package(benchmark 1.6 QUIET CONFIG)
+    if(benchmark_FOUND)
+        return()
+    endif()
+    if(NOT HLQ_FETCH_DEPENDENCIES)
+        message(FATAL_ERROR "hlq: Google Benchmark not found (or set HLQ_FETCH_DEPENDENCIES=ON)")
+    endif()
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.9.1
+        GIT_SHALLOW TRUE
+        SYSTEM)
+    FetchContent_MakeAvailable(benchmark)
+endfunction()
