@@ -255,7 +255,7 @@ over the optimal set of the levels above it, as in (1).
 
 $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the current working set (`Solver::primal_`). Tolerances: $\tau_f$ is `feasibility_tolerance` (absolute), $\tau_d$ is `dual_tolerance`, relative: a multiplier of subproblem $h$ counts as nonzero above $z_h := \tau_d (1 + \max_i \lvert \lambda_i \rvert)$, since its rounding noise scales with the largest multiplier of the subproblem.
 
-0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$.
+0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$. The factorization of the previous solve's final $W$ is kept: when neither the rows, the metric nor $W$ changed since (only the bounds or the reference did), it is reused instead of factored again.
 1. **For $h = 1, \dots, m + 1$:** phase $m + 1$ is the final choice among the optima (§6).
    1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
@@ -338,7 +338,7 @@ Both updates express the rows after the change, the **tail**, in coordinates: on
 
 The structure keeps this cheap: after a removal each row has one coordinate to absorb (one rotation); after an insertion the new row needs up to $\dim B - 1$ rotations and every later row one or two. Each rotation costs $O(t + n)$ for $t$ tail rows, so an update costs $O(n\, r_{\text{lead}})$ for the projection plus $O(\dim B\,(t + n))$ for the rotations. Coordinates that no row takes are directions the tail no longer needs. A tail row whose new entry exceeds $\epsilon$ becomes independent; when an insertion takes a direction a lower level was using, the step-3 test decides which tail row loses it.
 
-**Pivoting.** Rows keep their order inside a level except as step 1 reorders the tail; a full factorization happens at every solve (step 0 of §9), so any drift in the pivot order is limited to one solve.
+**Pivoting and drift.** Rows keep their order inside a level except as step 1 reorders the tail. A factorization reused across solves (step 0 of §9) is only ever updated, by orthogonal rotations and re-orthogonalized insertions: after 20,000 warm solves in a row, with the bounds moving, the solutions agree with fresh factorizations to $10^{-14}$, and `tests/test_reuse.cpp` checks 2,000.
 
 ## Part IV — Cost and numerics
 

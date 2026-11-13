@@ -127,6 +127,7 @@ public:
         has_problem_ = false;
         status_ = validate(matrix, lower, upper, level_ends);
         if (status_ != Status::Ready) {
+            rows_changed_ = true;
             return status_;
         }
 
@@ -146,25 +147,34 @@ public:
             rows_ = rows;
             levels_ = levels;
             reset();
+            rows_changed_ = true;
         }
+        const bool compare = !rows_changed_;  // the stored rows are those of a problem of this structure
         for (Index i = 0; i < rows; ++i) {
             for (Index j = 0; j < cols_; ++j) {
-                matrix_(i, j) = static_cast<Scalar>(matrix(i, j));
+                const auto value = static_cast<Scalar>(matrix(i, j));
+                rows_changed_ = rows_changed_ || (compare && value != matrix_(i, j));
+                matrix_(i, j) = value;
             }
             lower_(i) = static_cast<Scalar>(detail::element(lower, i));
             upper_(i) = static_cast<Scalar>(detail::element(upper, i));
         }
 
         // Equalities are always active. A warm-start constraint held at a bound that is now infinite is
-        // released.
+        // released. A change to either keeps the factorization from being reused, and one to the equalities
+        // also redecides the fold.
         for (Index i = 0; i < rows; ++i) {
-            equality_(i) = lower_(i) == upper_(i);
-            if (equality_(i)) {
+            const bool equality = lower_(i) == upper_(i);
+            rows_changed_ = rows_changed_ || equality != equality_(i);
+            equality_(i) = equality;
+            const bool was_active = active_(i);
+            if (equality) {
                 active_(i) = true;
                 lower_side_(i) = true;
             } else if (active_(i) && !std::isfinite(lower_side_(i) ? lower_(i) : upper_(i))) {
                 active_(i) = false;
             }
+            factor_valid_ = factor_valid_ && active_(i) == was_active;
         }
         // A last level that may be folded gets the fold's storage now, as solve() does not allocate.
         const Index last = levels_ < 2 ? 0 : level_ends_(levels_ - 2);
@@ -173,11 +183,9 @@ public:
             foldable = equality_(i);
         }
         if (foldable) {
-            fold_inv_.resize(cols_, cols_);
-            fold_reference_.resize(cols_);
+            fold_store_.resize(cols_ + 2, cols_ + rows_ - last);
         }
         has_problem_ = true;
-        scaled_valid_ = false;
         return status_;
     }
 
@@ -237,7 +245,7 @@ public:
                 }
             }
         }
-        scaled_valid_ = false;
+        rows_changed_ = true;
         return has_problem_ ? (status_ = Status::Ready) : Status::NoProblem;
     }
 
@@ -265,6 +273,7 @@ public:
             lower_side_(i) = equality_(i);
             locked_(i) = false;
         }
+        factor_valid_ = false;
     }
 
     /// Solves the problem; never allocates.
@@ -279,7 +288,11 @@ public:
             locked_(i) = equality_(i);
             equalities_only = equalities_only && equality_(i);
         }
-        lq_.factor(factored_rows(), active_, level_ends_, noise_, searched_);
+        if (!factor_valid_) {
+            lq_.factor(factored_rows(), active_, level_ends_, noise_, searched_);
+        } else if (lq_.factored() > searched_) {
+            lq_.truncate(searched_ - 1);  // left there by multipliers(levels())
+        }
         changed_ = 0;
         forward();
         copy(primal_, point_);
@@ -364,6 +377,9 @@ public:
             }
             forward();
         }
+        // The factorization is that of the final active set, which starts the next solve: unless the rows or
+        // that active set change in between, it need not be factored again.
+        factor_valid_ = true;
         copy(point_, solution_);
         detail::multiply(matrix_.block(0, 0, rows_, cols_), solution_.data(), values_.data());
         for (Index i = 0; i < rows_; ++i) {
@@ -512,12 +528,18 @@ private:
         return Status::Ready;
     }
 
+    [[nodiscard]] detail::MatrixRef<const Scalar> fold_inv() const noexcept {
+        return fold_store_.block(0, 0, cols_, cols_);
+    }
+
     /// The metric (as C, x = r + C z), whether it is the identity, and the reference of the search: the
     /// user's, or those of a folded last level.
-    [[nodiscard]] const Metric& metric() const noexcept { return fold_ ? fold_inv_ : metric_inv_; }
+    [[nodiscard]] detail::MatrixRef<const Scalar> metric() const noexcept {
+        return fold_ ? fold_inv() : metric_inv_.view();
+    }
     [[nodiscard]] bool identity() const noexcept { return fold_ ? fold_identity_ : identity_metric_; }
-    [[nodiscard]] const ColsVector& reference() const noexcept {
-        return fold_ ? fold_reference_ : reference_;
+    [[nodiscard]] const Scalar* reference() const noexcept {
+        return fold_ ? fold_store_.row(cols_ + 1) : reference_.data();
     }
 
     /// The rows that are factored: the rows of the problem in the coordinates of the metric.
@@ -538,7 +560,7 @@ private:
         const Index begin = levels_ < 2 ? 0 : level_ends_(levels_ - 2);
         const Index count = rows_ - begin;
         if (!settings_.fold_final_level || levels_ == 0 || cols_ == 0 || count < cols_
-            || fold_inv_.rows() != cols_) {
+            || fold_store_.rows() != cols_ + 2 || fold_store_.cols() != cols_ + count) {
             return;
         }
         for (Index i = begin; i < rows_; ++i) {
@@ -546,16 +568,15 @@ private:
                 return;
             }
         }
-        // F^T in scaled_'s storage, which is recomputed after the fold anyway, and the reflectors' tau in
-        // step_.
-        const detail::MatrixRef<Scalar> ft{scaled_.row(0), cols_, count, count};
+        const detail::MatrixRef<Scalar> ft =
+            fold_store_.block(0, cols_, cols_, count);  // F^T, kept for fold_reference
+
         for (Index j = 0; j < cols_; ++j) {
             for (Index i = 0; i < count; ++i) {
                 ft(j, i) = matrix_(begin + i, j);
             }
         }
-        Scalar* tau = step_.data();
-        detail::householder_qr(ft, tau);
+        detail::householder_qr(ft, fold_store_.row(cols_));
         Scalar largest = 0;
         Scalar smallest = std::numeric_limits<Scalar>::infinity();
         bool diagonal = true;  // R, whose transpose is the lower triangle of ft
@@ -569,20 +590,16 @@ private:
         if (!(smallest > std::sqrt(std::numeric_limits<Scalar>::epsilon()) * largest)) {
             return;
         }
-        Scalar* rotated = values_.data();  // Q^T b
-        for (Index i = 0; i < count; ++i) {
-            rotated[i] = lower_(begin + i);
-        }
-        detail::apply_qt(ft, tau, rotated);
-        std::copy_n(rotated, cols_, fold_reference_.data());
-        detail::solve_lower_transposed(ft.block(0, 0, cols_, cols_), fold_reference_.data());
         // C = R^-1, upper triangular: column i solves the leading block of R c = e_i. R is diagonal when the
         // rows' columns are orthogonal, as for x = 0 or a weighted x = r.
-        fold_inv_.fill(Scalar(0));
+        const detail::MatrixRef<Scalar> inverse = fold_store_.block(0, 0, cols_, cols_);
+        for (Index i = 0; i < cols_; ++i) {
+            std::fill_n(inverse.row(i), cols_, Scalar(0));
+        }
         fold_identity_ = diagonal;
         for (Index i = 0; i < cols_; ++i) {
             if (diagonal) {
-                fold_inv_(i, i) = Scalar(1) / ft(i, i);
+                inverse(i, i) = Scalar(1) / ft(i, i);
                 fold_identity_ = fold_identity_ && ft(i, i) == Scalar(1);
                 continue;
             }
@@ -591,11 +608,26 @@ private:
             column[i] = Scalar(1);
             detail::solve_lower_transposed(ft.block(0, 0, i + 1, i + 1), column);
             for (Index j = 0; j <= i; ++j) {
-                fold_inv_(j, i) = column[j];
+                inverse(j, i) = column[j];
             }
         }
         fold_ = true;
         searched_ = levels_ - 1;
+    }
+
+    /// The reference of a folded last level, r = R^-1 Q^T b, from its QR and its current targets.
+    void fold_reference() noexcept {
+        const Index begin = levels_ < 2 ? 0 : level_ends_(levels_ - 2);
+        const Index count = rows_ - begin;
+        const detail::MatrixRef<const Scalar> ft = fold_store_.block(0, cols_, cols_, count);
+        Scalar* reference = fold_store_.row(cols_ + 1);
+        Scalar* rotated = values_.data();  // Q^T b
+        for (Index i = 0; i < count; ++i) {
+            rotated[i] = lower_(begin + i);
+        }
+        detail::apply_qt(ft, fold_store_.row(cols_), rotated);
+        std::copy_n(rotated, cols_, reference);
+        detail::solve_lower_transposed(ft.block(0, 0, cols_, cols_), reference);
     }
 
     /// Multipliers of the user's choice among the optima, 1/2 (x - r)^T W (x - r), after a folded last level:
@@ -629,7 +661,7 @@ private:
             std::copy_n(g, cols_, z);
         } else {
             std::fill_n(z, cols_, Scalar(0));
-            detail::multiply_transposed_add(Scalar(1), fold_inv_.view(), g, z);
+            detail::multiply_transposed_add(Scalar(1), fold_inv(), g, z);
         }
         lq_.multipliers_of(z, dual_);
         for (Index p = 0; p < lq_.size(); ++p) {
@@ -639,30 +671,39 @@ private:
 
     /// Rows in the coordinates of the metric, and the rank threshold of each level.
     void prepare_rows() noexcept {
-        if (!scaled_valid_ || fold_setting_ != settings_.fold_final_level) {
+        // What depends on the rows (the fold's metric, the rows in its coordinates, the rank thresholds and
+        // so the factorization) is redone only when they, the metric or the settings it depends on changed.
+        if (rows_changed_ || fold_setting_ != settings_.fold_final_level
+            || noise_tolerance_ != settings_.rank_tolerance) {
+            rows_changed_ = false;
+            factor_valid_ = false;
             fold_setting_ = settings_.fold_final_level;
+            noise_tolerance_ = settings_.rank_tolerance;
             fold();
             if (!identity()) {
                 for (Index i = 0; i < rows_; ++i) {
                     std::fill_n(scaled_.row(i), cols_, Scalar(0));
-                    detail::multiply_transposed_add(Scalar(1), metric().view(), matrix_.row(i),
-                                                    scaled_.row(i));
+                    detail::multiply_transposed_add(Scalar(1), metric(), matrix_.row(i), scaled_.row(i));
                 }
             }
-            scaled_valid_ = true;
-        }
-        detail::multiply(matrix_.block(0, 0, rows_, cols_), reference().data(), at_reference_.data());
-        // Absolute: rounding noise scales with the longest row of a level, not with what is left of a row.
-        const detail::MatrixRef<const Scalar> rows = factored_rows();
-        for (Index k = 0, begin = 0; k < levels_; ++k) {
-            const Index end = level_ends_(k);
-            Scalar longest = 0;
-            for (Index i = begin; i < end; ++i) {
-                longest = std::max(longest, detail::squared_norm(rows.row(i), cols_));
+            // Absolute: rounding noise scales with the longest row of a level, not with what is left of a
+            // row.
+            const detail::MatrixRef<const Scalar> rows = factored_rows();
+            for (Index k = 0, begin = 0; k < levels_; ++k) {
+                const Index end = level_ends_(k);
+                Scalar longest = 0;
+                for (Index i = begin; i < end; ++i) {
+                    longest = std::max(longest, detail::squared_norm(rows.row(i), cols_));
+                }
+                noise_(k) = settings_.rank_tolerance * std::sqrt(longest);
+                begin = end;
             }
-            noise_(k) = settings_.rank_tolerance * std::sqrt(longest);
-            begin = end;
         }
+        // What depends on the bounds and the reference, every time.
+        if (fold_) {
+            fold_reference();
+        }
+        detail::multiply(matrix_.block(0, 0, rows_, cols_), reference(), at_reference_.data());
     }
 
     /// Solution of the active set, and the residual of each active row.
@@ -676,11 +717,11 @@ private:
         changed_ = levels_;
         if (identity()) {
             for (Index j = 0; j < cols_; ++j) {
-                primal_(j) = reference()(j) + step_(j);
+                primal_(j) = reference()[j] + step_(j);
             }
         } else {
-            detail::multiply(metric().view(), step_.data(), primal_.data());
-            detail::axpy(Scalar(1), reference().data(), primal_.data(), cols_);
+            detail::multiply(metric(), step_.data(), primal_.data());
+            detail::axpy(Scalar(1), reference(), primal_.data(), cols_);
         }
     }
 
@@ -770,7 +811,9 @@ private:
     Index rows_ = 0;
     Index levels_ = 0;
     bool has_problem_ = false;
-    bool scaled_valid_ = false;
+    bool rows_changed_ = true;    // the rows, the equalities or the metric changed since the last solve
+    bool factor_valid_ = false;   // lq_ factors the current active set
+    Scalar noise_tolerance_ = 0;  // settings_.rank_tolerance of noise_
     bool identity_metric_ = true;
     bool fold_ = false;           // the last level is the choice among the optima (see `fold`)
     bool fold_identity_ = false;  // and its metric is the identity
@@ -808,8 +851,10 @@ private:
     ColsVector primal_;  // solution of the active set
     ColsVector point_;   // iterate of the search
     ColsVector solution_;
-    Metric fold_inv_;  // C of a folded last level
-    ColsVector fold_reference_;
+    // A folded last level, in one allocation: rows 0 to cols - 1 hold its C (columns 0 to cols - 1) and the
+    // QR of its rows, transposed (the next columns); row cols the reflectors' tau, and row cols + 1 its
+    // reference.
+    detail::Matrix<Scalar, detail::grow(MaxCols, 2), detail::sum(MaxCols, MaxRows)> fold_store_;
 };
 
 }  // namespace hlq
