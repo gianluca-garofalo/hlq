@@ -142,11 +142,11 @@ Cold solves from data to solution (setup included), median of 5 runs, on a 2.1 G
 
 | Family | hlq | hlq without the final $x = 0$ level | HierarchicalQP | LexLS | DAQP |
 |---|---|---|---|---|---|
-| random (2–8 variables) | 19 µs | 12 µs | 20 µs | 27 µs | 6 µs |
-| degenerate (3 variables) | 6 µs | | 6 µs | 8 µs | 3 µs |
-| large (20–40 variables) | 382 µs | 129 µs | 755 µs | 694 µs | 59 µs |
+| random (2–8 variables) | 18 µs | 12 µs | 21 µs | 23 µs | 6 µs |
+| degenerate (3 variables) | 6 µs | | 7 µs | 8 µs | 3 µs |
+| large (20–40 variables) | 196 µs | 107 µs | 765 µs | 703 µs | 56 µs |
 
-DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about twice as fast as HierarchicalQP and LexLS on the large family, and five times as fast without the redundant final level.
+DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and seven times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
 
 CI reruns both on every pull request (see the Comparisons workflow's summary). Known limits are listed at the end of [docs/algorithm.md](docs/algorithm.md).
 
