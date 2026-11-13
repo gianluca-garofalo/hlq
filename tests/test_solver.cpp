@@ -233,6 +233,24 @@ TEST(Solver, StopsAtMaxChanges) {
     EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(1, 1)));
 }
 
+TEST(Solver, ResetKeepsTheEqualities) {
+    // Level 1: x1 + x2 = 2 and x1 <= 0.5. Level 2: x = 0.
+    Eigen::Matrix<double, 4, 2> a;
+    a << 1, 1, 1, 0, 1, 0, 0, 1;
+    const Eigen::Vector4d lower(2, -inf, 0, 0), upper(2, 0.5, 0, 0);
+    Solver solver(4, 2);
+    ASSERT_EQ(solver.set_problem(a, lower, upper, Eigen::Vector2i(2, 4)), Status::Ready);
+    ASSERT_EQ(solver.solve(), Status::Solved);
+    const Eigen::VectorXd first = solver.solution();
+    EXPECT_TRUE(first.isApprox(Eigen::Vector2d(0.5, 1.5)));
+    for (int i = 0; i < 3; ++i) {
+        solver.reset();
+        ASSERT_EQ(solver.solve(), Status::Solved);
+        EXPECT_LT((solver.solution() - first).norm(), 1e-14);
+        EXPECT_EQ(solver.activity(0), Activity::Equality);
+    }
+}
+
 TEST(Solver, KeepsTheWarmStartOnlyForTheSameStructure) {
     Eigen::Matrix<double, 2, 1> a(1, 1);
     const Eigen::Vector2d lower(-inf, 3), upper(1, 3);
