@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include <hlq/eigen.hpp>
 #include <hlq/hlq.hpp>
 
 #include "lexls_interface.hpp"
@@ -159,7 +160,7 @@ Tally run(const std::string& spec, unsigned count) {
             t.max_changes += solver.solve() == hlq::Status::MaxChanges ? 1 : 0;
             qp.set_problem(p.matrix, p.lower, p.upper, p.level_ends);
         }
-        const Eigen::VectorXd x = solver.solution();
+        const Eigen::VectorXd x = hlq::as_eigen(solver.solution());
         const Eigen::VectorXd y = qp.get_primal();
 
         auto lexls = lexls_from_stack(p.matrix, p.upper, p.lower, p.level_ends);

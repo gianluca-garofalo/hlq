@@ -11,13 +11,21 @@
 
 namespace {
 
-using Factor = hlq::detail::PriorityLQ<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::Dynamic>;
-using Index = Eigen::Index;
+using Factor = hlq::detail::PriorityLQ<double, hlq::dynamic, hlq::dynamic, hlq::dynamic>;
+using Index = hlq::Index;
+using RowMajor = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+
+/// A view of the factorization as an Eigen matrix.
+Eigen::MatrixXd to_eigen(hlq::detail::MatrixRef<const double> m) {
+    return Eigen::Map<const RowMajor, 0, Eigen::OuterStride<>>(m.data, m.rows, m.cols,
+                                                               Eigen::OuterStride<>(m.stride));
+}
 
 /// Random equality hierarchy with rank-deficient levels, rows that depend on the levels above, and an
 /// optional ill-conditioned level.
 struct Hierarchy {
     Eigen::MatrixXd rows;
+    RowMajor row_major;
     Eigen::VectorXd targets;
     Eigen::VectorXi ends;
     std::vector<Eigen::MatrixXd> level_rows;
@@ -72,6 +80,12 @@ struct Hierarchy {
             at += b.rows();
             ends(k) = static_cast<int>(at);
         }
+        row_major = rows;
+    }
+
+    /// The rows as the factorization reads them.
+    [[nodiscard]] Factor::Rows view() const {
+        return {row_major.data(), row_major.rows(), row_major.cols(), row_major.cols()};
     }
 
     [[nodiscard]] Factor::LevelsVector noise(double tolerance = 1e-9) const {
@@ -86,8 +100,8 @@ struct Hierarchy {
 
 /// K Q reproduces the active rows, Q is orthonormal (zero at dependent positions) and K lower triangular.
 void expect_consistent(const Factor& f, const Eigen::MatrixXd& rows) {
-    const Eigen::MatrixXd k = f.coefficients();
-    const Eigen::MatrixXd q = f.basis();
+    const Eigen::MatrixXd k = to_eigen(f.coefficients());
+    const Eigen::MatrixXd q = to_eigen(f.basis());
     Eigen::MatrixXd active(f.size(), rows.cols());
     for (Index p = 0; p < f.size(); ++p) {
         active.row(p) = rows.row(f.row(p));
@@ -119,7 +133,7 @@ Eigen::VectorXd solve(Factor& f, const Hierarchy& h) {
         goal(p) = h.targets(f.row(p));
     }
     f.solve(goal, residual, step);
-    return step;
+    return Eigen::Map<const Eigen::VectorXd>(step.data(), step.size());
 }
 
 }  // namespace
@@ -129,7 +143,7 @@ TEST(PriorityLQ, FactorsAllRows) {
         const Hierarchy h(seed);
         Factor f(h.rows.rows(), h.rows.cols());
         f.prepare(h.ends.size());
-        f.factor(h.rows, Eigen::Array<bool, Eigen::Dynamic, 1>::Ones(h.rows.rows()), h.ends, h.noise());
+        f.factor(h.view(), Eigen::Array<bool, Eigen::Dynamic, 1>::Ones(h.rows.rows()), h.ends, h.noise());
         expect_consistent(f, h.rows);
         const auto reference = hlq::test::reference_solve(h.level_rows, h.level_targets);
         for (Index k = 0; k < h.ends.size(); ++k) {
@@ -145,7 +159,7 @@ TEST(PriorityLQ, SolvesLikeTheReference) {
             const Hierarchy h(seed, ill);
             Factor f(h.rows.rows(), h.rows.cols());
             f.prepare(h.ends.size());
-            f.factor(h.rows, Eigen::Array<bool, Eigen::Dynamic, 1>::Ones(h.rows.rows()), h.ends, h.noise());
+            f.factor(h.view(), Eigen::Array<bool, Eigen::Dynamic, 1>::Ones(h.rows.rows()), h.ends, h.noise());
             const auto reference = hlq::test::reference_solve(h.level_rows, h.level_targets);
             bool same_ranks = true;
             for (Index k = 0; k < h.ends.size(); ++k) {
@@ -168,7 +182,7 @@ TEST(PriorityLQ, MultipliersMatchTheReference) {
         const Hierarchy h(seed);
         Factor f(h.rows.rows(), h.rows.cols());
         f.prepare(h.ends.size());
-        f.factor(h.rows, Eigen::Array<bool, Eigen::Dynamic, 1>::Ones(h.rows.rows()), h.ends, h.noise());
+        f.factor(h.view(), Eigen::Array<bool, Eigen::Dynamic, 1>::Ones(h.rows.rows()), h.ends, h.noise());
         Factor::RowsVector goal(f.size()), residual(f.size()), dual(f.size());
         Factor::ColsVector step(h.rows.cols());
         for (Index p = 0; p < f.size(); ++p) {
@@ -205,7 +219,7 @@ TEST(PriorityLQ, UpdatesMatchAFreshFactorization) {
         const auto noise = h.noise();
         Factor f(m, h.rows.cols());
         f.prepare(h.ends.size());
-        f.factor(h.rows, active, h.ends, noise);
+        f.factor(h.view(), active, h.ends, noise);
         for (int change = 0; change < 12; ++change) {
             const auto i = std::uniform_int_distribution<Index>(0, m - 1)(gen);
             Index level = 0;
@@ -215,14 +229,14 @@ TEST(PriorityLQ, UpdatesMatchAFreshFactorization) {
             if (active(i)) {
                 f.remove(i, noise);
             } else {
-                f.insert(h.rows, i, level, noise);
+                f.insert(h.view(), i, level, noise);
             }
             active(i) = !active(i);
             expect_consistent(f, h.rows);
 
             Factor fresh(m, h.rows.cols());
             fresh.prepare(h.ends.size());
-            fresh.factor(h.rows, active, h.ends, noise);
+            fresh.factor(h.view(), active, h.ends, noise);
             for (Index k = 0; k < h.ends.size(); ++k) {
                 EXPECT_EQ(f.rank(k), fresh.rank(k)) << "seed " << seed << " change " << change;
             }

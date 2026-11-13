@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <hlq/eigen.hpp>
 #include <hlq/hlq.hpp>
 
 namespace {
@@ -27,11 +28,11 @@ Eigen::VectorXd solve_twice(const Case& c) {
     Solver solver(c.matrix.rows(), c.matrix.cols());
     EXPECT_EQ(solver.set_problem(c.matrix, c.lower, c.upper, c.ends), Status::Ready);
     EXPECT_EQ(solver.solve(), Status::Solved);
-    const Eigen::VectorXd cold = solver.solution();
+    const Eigen::VectorXd cold = hlq::as_eigen(solver.solution());
     EXPECT_EQ(solver.set_problem(c.matrix, c.lower, c.upper, c.ends), Status::Ready);
     EXPECT_EQ(solver.solve(), Status::Solved);
     EXPECT_EQ(solver.changes(), 0);
-    EXPECT_LT((solver.solution() - cold).norm(), 1e-12 * (1 + cold.norm()));
+    EXPECT_LT((hlq::as_eigen(solver.solution()) - cold).norm(), 1e-12 * (1 + cold.norm()));
     return cold;
 }
 
@@ -111,11 +112,11 @@ TEST(Solver, MultiplierTwoLevelsBelowReleasesABound) {
     Solver solver(3, 2);
     ASSERT_EQ(solver.set_problem(a, lower, upper, ends), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(1, 3)));
+    EXPECT_TRUE(hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(1, 3)));
     EXPECT_EQ(solver.activity(0), Activity::Upper);
     // The level-3 subproblem: its residual is x2 - 2 = 1, and through the equality of level 2 the bound of
     // level 1 holds it back with a nonnegative multiplier, as an upper bound should.
-    const Eigen::VectorXd lambda = solver.multipliers(2);
+    const Eigen::VectorXd lambda = hlq::as_eigen(solver.multipliers(2));
     EXPECT_NEAR(lambda(2), 1, 1e-12);
     EXPECT_NEAR(lambda(1), -1, 1e-12);
     EXPECT_NEAR(lambda(0), 1, 1e-12);
@@ -123,7 +124,7 @@ TEST(Solver, MultiplierTwoLevelsBelowReleasesABound) {
     lower(2) = upper(2) = 4;
     ASSERT_EQ(solver.set_problem(a, lower, upper, ends), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    EXPECT_LT((solver.solution() - Eigen::Vector2d(0, 4)).norm(), 1e-12);
+    EXPECT_LT((hlq::as_eigen(solver.solution()) - Eigen::Vector2d(0, 4)).norm(), 1e-12);
     EXPECT_EQ(solver.changes(), 1);
     EXPECT_EQ(solver.activity(0), Activity::Inactive);
 }
@@ -137,16 +138,16 @@ TEST(Solver, ReportsLevelsAtTheSolution) {
     Solver solver(3, 2);
     ASSERT_EQ(solver.set_problem(a, lower, upper, ends), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(1, 1)));
+    EXPECT_TRUE(hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(1, 1)));
     EXPECT_EQ(solver.activity(0), Activity::Upper);
     EXPECT_EQ(solver.activity(1), Activity::Equality);
     EXPECT_NEAR(solver.level_cost(0), 0, 1e-24);
     EXPECT_NEAR(solver.level_cost(1), 1, 1e-12);
-    EXPECT_NEAR(solver.violation()(1), -1, 1e-12);
+    EXPECT_NEAR(hlq::as_eigen(solver.violation())(1), -1, 1e-12);
     EXPECT_EQ(solver.rank(0), 1);
     EXPECT_EQ(solver.rank(1), 1);
     // An upper bound holding a level back has a nonnegative multiplier.
-    EXPECT_NEAR(solver.multipliers(1)(0), 1, 1e-12);
+    EXPECT_NEAR(hlq::as_eigen(solver.multipliers(1))(0), 1, 1e-12);
 }
 
 TEST(Solver, ReferenceAndMetricChooseAmongTheOptima) {
@@ -157,16 +158,18 @@ TEST(Solver, ReferenceAndMetricChooseAmongTheOptima) {
     Solver solver(1, 2);
     ASSERT_EQ(solver.set_problem(a, b, b, ends), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(1, 1)));  // minimum norm
+    EXPECT_TRUE(hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(1, 1)));  // minimum norm
 
     ASSERT_EQ(solver.set_reference(Eigen::Vector2d(3, 0)), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(2.5, -0.5)));  // closest to the reference
+    EXPECT_TRUE(
+        hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(2.5, -0.5)));  // closest to the reference
 
     ASSERT_EQ(solver.set_reference(Eigen::Vector2d::Zero()), Status::Ready);
     ASSERT_EQ(solver.set_metric(Eigen::Vector2d(1, 4).asDiagonal().toDenseMatrix()), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(1.6, 0.4)));  // minimum of x1^2 + 4 x2^2
+    EXPECT_TRUE(
+        hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(1.6, 0.4)));  // minimum of x1^2 + 4 x2^2
 }
 
 TEST(Solver, InfiniteBoundsAreNeverActive) {
@@ -178,7 +181,7 @@ TEST(Solver, InfiniteBoundsAreNeverActive) {
     ASSERT_EQ(solver.set_problem(a, lower, upper, ends), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
     EXPECT_EQ(solver.activity(0), Activity::Inactive);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(0, 3)));
+    EXPECT_TRUE(hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(0, 3)));
 }
 
 TEST(Solver, RejectsInvalidProblems) {
@@ -233,7 +236,7 @@ TEST(Solver, StopsAtMaxChanges) {
     solver.settings().max_changes = 500;
     solver.reset();
     EXPECT_EQ(solver.solve(), Status::Solved);
-    EXPECT_TRUE(solver.solution().isApprox(Eigen::Vector2d(1, 1)));
+    EXPECT_TRUE(hlq::as_eigen(solver.solution()).isApprox(Eigen::Vector2d(1, 1)));
 }
 
 TEST(Solver, ResetKeepsTheEqualities) {
@@ -244,12 +247,12 @@ TEST(Solver, ResetKeepsTheEqualities) {
     Solver solver(4, 2);
     ASSERT_EQ(solver.set_problem(a, lower, upper, Eigen::Vector2i(2, 4)), Status::Ready);
     ASSERT_EQ(solver.solve(), Status::Solved);
-    const Eigen::VectorXd first = solver.solution();
+    const Eigen::VectorXd first = hlq::as_eigen(solver.solution());
     EXPECT_TRUE(first.isApprox(Eigen::Vector2d(0.5, 1.5)));
     for (int i = 0; i < 3; ++i) {
         solver.reset();
         ASSERT_EQ(solver.solve(), Status::Solved);
-        EXPECT_LT((solver.solution() - first).norm(), 1e-14);
+        EXPECT_LT((hlq::as_eigen(solver.solution()) - first).norm(), 1e-14);
         EXPECT_EQ(solver.activity(0), Activity::Equality);
     }
 }

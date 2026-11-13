@@ -1,21 +1,71 @@
 // solve() and the accessors after it never allocate.
 //
-// The target defines EIGEN_RUNTIME_NO_MALLOC: Eigen then checks every heap allocation with eigen_assert,
-// which is redefined here to count failures instead of aborting, in every build type.
+// The global operator new of this test counts the allocations made while `counting` is set. Everything in
+// that window only records its results, which are checked after it.
 
-#include <cstdio>
+#include <cstddef>
+#include <cstdlib>
+#include <new>
 
 namespace {
-int eigen_failures = 0;
+
+bool counting = false;
+long allocations = 0;
+
+void* allocate(std::size_t size) noexcept {
+    if (counting) {
+        ++allocations;
+    }
+    return std::malloc(size == 0 ? 1 : size);
+}
+
 }  // namespace
 
-#define eigen_assert(x)                                                                        \
-    do {                                                                                       \
-        if (!static_cast<bool>(x)) {                                                           \
-            ++eigen_failures;                                                                  \
-            std::fprintf(stderr, "eigen_assert failed: %s (%s:%d)\n", #x, __FILE__, __LINE__); \
-        }                                                                                      \
-    } while (false)
+// Every form of operator new and delete is replaced, so that all memory comes from and returns to malloc.
+void* operator new(std::size_t size) {
+    if (void* p = allocate(size)) {
+        return p;
+    }
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) {
+    return operator new(size);
+}
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    return allocate(size);
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    return allocate(size);
+}
+
+// GCC sees free() on memory from operator new, not knowing that this operator new is malloc.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void operator delete(void* p) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p) noexcept {
+    std::free(p);
+}
+void operator delete(void* p, std::size_t) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p, std::size_t) noexcept {
+    std::free(p);
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept {
+    std::free(p);
+}
+void operator delete[](void* p, const std::nothrow_t&) noexcept {
+    std::free(p);
+}
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -27,36 +77,54 @@ namespace {
 
 using hlq::test::Family;
 
-/// Solves a problem with heap allocation forbidden: cold, warm, and after its bounds move.
+/// Solves a problem with allocation counted: cold, warm, and after its bounds move. Returns the number of
+/// allocations, and how many of the solves did not succeed.
 template <typename Solver>
-void solve_without_allocation(const hlq::test::Problem& p, Solver& solver) {
-    ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
+std::pair<long, int> solve_counting(const hlq::test::Problem& p, Solver& solver) {
     const Eigen::VectorXd lower = p.lower.array() - 0.1;
     const Eigen::VectorXd upper = p.upper.array() + 0.1;
-    Eigen::internal::set_is_malloc_allowed(false);
-    EXPECT_EQ(solver.solve(), hlq::Status::Solved);
-    EXPECT_EQ(solver.solve(), hlq::Status::Solved);
-    for (Eigen::Index k = 0; k < p.levels(); ++k) {
-        static_cast<void>(solver.multipliers(k));
-        static_cast<void>(solver.level_cost(k));
+    if (solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends) != hlq::Status::Ready) {
+        return {0, 1};
     }
+    int failures = 0;
+    allocations = 0;
+    counting = true;
+    failures += solver.solve() == hlq::Status::Solved ? 0 : 1;
+    failures += solver.solve() == hlq::Status::Solved ? 0 : 1;
+    for (Eigen::Index k = 0; k <= p.levels(); ++k) {
+        static_cast<void>(solver.multipliers(k));
+        static_cast<void>(solver.level_cost(std::min<Eigen::Index>(k, p.levels() - 1)));
+    }
+    static_cast<void>(solver.solution());
+    static_cast<void>(solver.violation());
     // Same structure: set_problem keeps its storage and the active set.
-    EXPECT_EQ(solver.set_problem(p.matrix, lower, upper, p.level_ends), hlq::Status::Ready);
-    EXPECT_EQ(solver.solve(), hlq::Status::Solved);
+    failures += solver.set_problem(p.matrix, lower, upper, p.level_ends) == hlq::Status::Ready ? 0 : 1;
+    failures += solver.solve() == hlq::Status::Solved ? 0 : 1;
     solver.reset();
-    EXPECT_EQ(solver.solve(), hlq::Status::Solved);
-    Eigen::internal::set_is_malloc_allowed(true);
+    failures += solver.solve() == hlq::Status::Solved ? 0 : 1;
+    counting = false;
+    return {allocations, failures};
 }
 
 }  // namespace
+
+TEST(NoMalloc, CountsAllocations) {
+    counting = true;
+    allocations = 0;
+    const std::vector<double>* probe = new std::vector<double>(3);
+    counting = false;
+    delete probe;
+    EXPECT_EQ(allocations, 2);
+}
 
 TEST(NoMalloc, DynamicSolver) {
     for (const Family family : {Family::Random, Family::Degenerate, Family::Large}) {
         for (unsigned seed = 0; seed < 200; ++seed) {
             const auto p = hlq::test::make_problem(family, seed);
             hlq::Solver<> solver(p.rows(), p.cols());
-            solve_without_allocation(p, solver);
-            ASSERT_EQ(eigen_failures, 0) << hlq::test::to_string(family) << " seed " << seed;
+            const auto [count, failures] = solve_counting(p, solver);
+            ASSERT_EQ(count, 0) << hlq::test::to_string(family) << " seed " << seed;
+            ASSERT_EQ(failures, 0) << hlq::test::to_string(family) << " seed " << seed;
         }
     }
 }
@@ -65,7 +133,13 @@ TEST(NoMalloc, FixedSizeSolver) {
     for (unsigned seed = 0; seed < 200; ++seed) {
         const auto p = hlq::test::make_problem(Family::Random, seed);
         hlq::Solver<double, 38, 8, 7> solver(p.rows(), p.cols());
-        solve_without_allocation(p, solver);
-        ASSERT_EQ(eigen_failures, 0) << "seed " << seed;
+        counting = true;
+        allocations = 0;
+        hlq::Solver<double, 38, 8, 7> fresh(p.rows(), p.cols());
+        counting = false;
+        ASSERT_EQ(allocations, 0) << "a solver of fixed capacities allocated";
+        const auto [count, failures] = solve_counting(p, solver);
+        ASSERT_EQ(count, 0) << "seed " << seed;
+        ASSERT_EQ(failures, 0) << "seed " << seed;
     }
 }

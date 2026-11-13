@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <hlq/eigen.hpp>
 #include <hlq/hlq.hpp>
 
 #include "support/certificate.hpp"
@@ -25,8 +26,9 @@ TEST(Capacity, FixedSizeSolverMatchesTheDynamicOne) {
         ASSERT_EQ(fixed.solve(), hlq::Status::Solved);
         ASSERT_EQ(dynamic.solve(), hlq::Status::Solved);
         EXPECT_EQ(fixed.changes(), dynamic.changes());
-        EXPECT_LT((Eigen::VectorXd(fixed.solution()) - dynamic.solution()).norm(),
-                  1e-14 * (1 + dynamic.solution().norm()));
+        EXPECT_LT(
+            (Eigen::VectorXd(hlq::as_eigen(fixed.solution())) - hlq::as_eigen(dynamic.solution())).norm(),
+            1e-14 * (1 + hlq::as_eigen(dynamic.solution()).norm()));
     }
 }
 
@@ -47,8 +49,10 @@ TEST(Capacity, SinglePrecision) {
         ASSERT_EQ(full.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
         ASSERT_EQ(single.solve(), hlq::Status::Solved) << "seed " << seed;
         ASSERT_EQ(full.solve(), hlq::Status::Solved);
-        const Eigen::VectorXd x = single.solution().cast<double>();
-        EXPECT_LT((x - full.solution()).norm(), 1e-4 * (1 + full.solution().norm())) << "seed " << seed;
+        const Eigen::VectorXd x = hlq::as_eigen(single.solution()).cast<double>();
+        EXPECT_LT((x - hlq::as_eigen(full.solution())).norm(),
+                  1e-4 * (1 + hlq::as_eigen(full.solution()).norm()))
+            << "seed " << seed;
         const auto cert = hlq::test::certify(p, x, {}, {}, 1e-4, 1e-3);
         EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
                                   << cert.residual;

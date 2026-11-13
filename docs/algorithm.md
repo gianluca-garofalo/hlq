@@ -387,7 +387,7 @@ The tests (`tests/`) check the implementation in three independent ways:
 - **With an optimality certificate** (`tests/support/certificate.hpp`), independent of the solver: at every level, the gradient of its squared violation must be balanced by multipliers of the bounds tight above it with the sign their side allows, found by non-negative least squares (Lawson and Hanson); and the final choice must be balanced the same way. Random, integer, degenerate (many parallel rows) and large problems, cold, warm, from another problem's active set, in a metric, and without a final regularization level. A test checks that the certificate rejects perturbed solutions.
 - **Against other solvers** (`benchmarks/compare.cpp`): level by level against LexLS, HierarchicalQP and DAQP, pinned; hlq is never worse on well-conditioned families, and on ill-conditioned ones it is better more often than not.
 
-The no-allocation guarantee is checked with Eigen's `EIGEN_RUNTIME_NO_MALLOC`. CI runs everything with gcc, clang and MSVC, and under the address and undefined-behaviour sanitizers.
+The no-allocation guarantee is checked by a test that counts the calls to a replaced global `operator new`. CI runs everything with gcc, clang and MSVC, and under the address and undefined-behaviour sanitizers.
 
 **Known limits.**
 - On degenerate, ill-conditioned problems the active-set search can cycle until `max_changes` (about 1 in 2000 of the degenerate ill-conditioned family); the solver then returns `Status::MaxChanges` with a point that satisfies the levels it finished.
