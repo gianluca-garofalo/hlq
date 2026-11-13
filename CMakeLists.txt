@@ -14,6 +14,8 @@ project(hlq
     LANGUAGES CXX)
 
 option(HLQ_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
+option(HLQ_BUILD_BENCHMARKS "Build the benchmarks (downloads Google Benchmark if needed)" OFF)
+option(HLQ_BUILD_COMPARISONS "Build the comparisons with LexLS, DAQP and HierarchicalQP (downloads them)" OFF)
 option(HLQ_BUILD_PYTHON "Build the Python module" OFF)
 option(HLQ_FETCH_DEPENDENCIES "Download the dependencies that are not found" ON)
 option(HLQ_INSTALL "Generate the install rules" ${PROJECT_IS_TOP_LEVEL})
@@ -31,13 +33,17 @@ target_include_directories(hlq INTERFACE
 target_link_libraries(hlq INTERFACE Eigen3::Eigen)
 target_compile_features(hlq INTERFACE cxx_std_20)
 
-if(HLQ_BUILD_TESTS)
+if(HLQ_BUILD_TESTS OR HLQ_BUILD_BENCHMARKS OR HLQ_BUILD_COMPARISONS)
     include(hlqWarnings)
 endif()
 
 if(HLQ_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(HLQ_BUILD_BENCHMARKS OR HLQ_BUILD_COMPARISONS)
+    add_subdirectory(benchmarks)
 endif()
 
 if(HLQ_BUILD_PYTHON)
