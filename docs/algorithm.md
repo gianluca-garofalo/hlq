@@ -24,7 +24,7 @@ No null-space basis $Z_k$ is ever formed.
 - $X^\dagger$: Moore–Penrose pseudo-inverse.
 - $\tau$: the rank tolerance, `Settings::rank_tolerance` ($10^{-9}$ in double); $\epsilon_k := \tau \max_{i \in \text{level } k} \lVert a_i \rVert$ is the absolute rank threshold of level $k$, written $\epsilon$ when the level is clear.
 - $\mathcal I_k$: indices of the rows of level $k$ in factor order; $\mathcal J_k \subseteq \mathcal I_k$: its independent rows; $r_k := |\mathcal J_k|$, $s_k := m_k - r_k$.
-- $\mathcal J := \bigcup_k \mathcal J_k$, $r := |\mathcal J| = \operatorname{rank} \bar A$.
+- $\mathcal J := \bigcup_k \mathcal J_k$, $r := |\mathcal J| = \mathrm{rank}\, \bar A$.
 - $K$, $Q$: the factors of §3; $\kappa_{ij}$ are the entries of $K$, and $q_i$ the rows of $Q$.
 - Sub-blocks:
   - $\hat Q_k := Q[\mathcal J_k, :]$ ($r_k \times n$) and $\hat Q := Q[\mathcal J, :]$ ($r \times n$);
@@ -104,12 +104,12 @@ The pivot search keeps the residual norms of the level and downdates them, $\lVe
 ### 4. What the factors contain
 
 **Lemma 1.** For every $k$, the rows of $\hat Q_1, \dots, \hat Q_k$ are an orthonormal basis of $\mathcal R(\bar A_k^\top)$, and $P_k = I - \sum_{j \le k} \hat Q_j^\top \hat Q_j$.
-*Proof.* Gram–Schmidt keeps $\operatorname{span}\{q_j : j \le i\} = \operatorname{span}\{a_j : j \le i\}$; the zero rows add nothing. $\square$
+*Proof.* Gram–Schmidt keeps $\mathrm{span}\{q_j : j \le i\} = \mathrm{span}\{a_j : j \le i\}$; the zero rows add nothing. $\square$
 
 **Lemma 2.** $B_k = A_k P_{k-1} = F_k \hat Q_k$, and $F_k$ has full column rank $r_k$.
 *Proof.* $A_k = \sum_{j \le k} K_{kj} \hat Q_j$, $\hat Q_j P_{k-1} = 0$ for $j < k$, and $\hat Q_k P_{k-1} = \hat Q_k$ (Lemma 1). The rows $\mathcal J_k$ of $F_k$ form a lower triangular $r_k \times r_k$ matrix with diagonal $\kappa_{ii} > 0$. $\square$
 
-So the level-$k$ block of $K$ is the level's projected rows written in a basis that all levels share, and $\operatorname{rank} B_k = r_k$. The null-space basis $Z_k$ of the classical formulation is any orthonormal basis of the complement of $\hat Q_1, \dots, \hat Q_k$; it is never needed. $\bar A \hat Q^\top = K[:, \mathcal J]$ is block lower triangular with full-column-rank diagonal blocks.
+So the level-$k$ block of $K$ is the level's projected rows written in a basis that all levels share, and $\mathrm{rank}\, B_k = r_k$. The null-space basis $Z_k$ of the classical formulation is any orthonormal basis of the complement of $\hat Q_1, \dots, \hat Q_k$; it is never needed. $\bar A \hat Q^\top = K[:, \mathcal J]$ is block lower triangular with full-column-rank diagonal blocks.
 
 **Gram form.** $G := \bar A \bar A^\top = K K^\top$, and the Schur complement of $G$ after the levels before $k$ is $F_k F_k^\top = B_k B_k^\top$. With $K = L D^{1/2}$, this is the LDL factorization of DAQP's $M = A_W H^{-1} A_W^\top$ (with $H = I$), taken in priority order. §16 explains why $G$ itself should not be formed.
 
@@ -176,7 +176,7 @@ $$
 - Then $P_{k-1} \tau_{k+1} \in P_{k-1} \mathcal R(\bar A_k^\top) = \mathcal R(B_k^\top)$, so (11) has an exact solution. That solution gives $P_{k-1} \tau_k = 0$, i.e. $\tau_k \in \mathcal R(\bar A_{k-1}^\top)$.
 
 **Factored form.** Keep the coordinates $\theta := \hat Q \tau \in \mathbb R^r$, in blocks $\theta_j$:
-- Since $\tau_{k+1} \in \operatorname{span}(\hat Q_1, \dots, \hat Q_k)$ (Lemma 1), $P_{k-1} \tau_{k+1} = \hat Q_k^\top \theta_k$.
+- Since $\tau_{k+1} \in \mathrm{span}(\hat Q_1, \dots, \hat Q_k)$ (Lemma 1), $P_{k-1} \tau_{k+1} = \hat Q_k^\top \theta_k$.
 - By Lemma 2, $B_k^\top \lambda_k = \hat Q_k^\top F_k^\top \lambda_k$.
 - Adding $A_k^\top \lambda_k = \sum_{j \le k} \hat Q_j^\top K_{kj}^\top \lambda_k$ to $\tau$ adds $K_{kj}^\top \lambda_k$ to $\theta_j$.
 
@@ -240,7 +240,7 @@ $$
 Each row has bounds $l_i \le a_i x \le u_i$ (an equality when $l_i = u_i$). Level $k$ minimizes its violation
 
 $$
-f_k(x) = \tfrac12 \sum_{i \in \text{level } k} \operatorname{dist}\big(a_i x, [l_i, u_i]\big)^2 \tag{14}
+f_k(x) = \tfrac12 \sum_{i \in \text{level } k} \mathrm{dist}\big(a_i x, [l_i, u_i]\big)^2 \tag{14}
 $$
 
 over the optimal set of the levels above it, as in (1).
@@ -258,7 +258,7 @@ $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the curr
    1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
       $$
-      t_i = \operatorname{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}
+      t_i = \mathrm{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}
       $$
       The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2.
    3. **Drop test.** Set $\hat x \leftarrow \bar x$ and compute the multipliers of subproblem $h$ (§6). For a level's own rows these are its residuals, $\lambda_i = \rho_i$. Let $i$ be the unlocked row of $W$ in levels $\le h$ that maximizes $-\sigma_i \lambda_i$. If $-\sigma_i \lambda_i > z_h$, remove it (§12) and go back to step 2.
