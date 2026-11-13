@@ -14,6 +14,7 @@ project(hlq
     LANGUAGES CXX)
 
 option(HLQ_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
+option(HLQ_BUILD_PYTHON "Build the Python module" OFF)
 option(HLQ_FETCH_DEPENDENCIES "Download the dependencies that are not found" ON)
 option(HLQ_INSTALL "Generate the install rules" ${PROJECT_IS_TOP_LEVEL})
 
@@ -37,6 +38,10 @@ endif()
 if(HLQ_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(HLQ_BUILD_PYTHON)
+    add_subdirectory(python)
 endif()
 
 if(HLQ_INSTALL)
