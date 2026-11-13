@@ -109,12 +109,13 @@ std::pair<long, int> solve_counting(const hlq::test::Problem& p, Solver& solver)
 }  // namespace
 
 TEST(NoMalloc, CountsAllocations) {
+    // Through a volatile, so that the compiler cannot elide the allocation.
     counting = true;
     allocations = 0;
-    const std::vector<double>* probe = new std::vector<double>(3);
+    void* volatile probe = ::operator new(16);
     counting = false;
-    delete probe;
-    EXPECT_EQ(allocations, 2);
+    ::operator delete(probe);
+    EXPECT_EQ(allocations, 1);
 }
 
 TEST(NoMalloc, DynamicSolver) {

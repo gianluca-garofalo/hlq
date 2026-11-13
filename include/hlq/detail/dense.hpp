@@ -28,6 +28,13 @@
 namespace hlq::detail {
 
 #if HLQ_VECTOR_EXTENSIONS
+#ifndef HLQ_SIMD_LENGTH
+/// Vectors shorter than this use plain loops, which the compiler vectorizes itself where it can: for them,
+/// setting up and reducing SIMD registers costs more than it saves.
+#define HLQ_SIMD_LENGTH 16
+#endif
+inline constexpr Index simd_length = HLQ_SIMD_LENGTH;
+
 /// Bytes of a SIMD register of the target.
 #if defined(__AVX512F__)
 inline constexpr std::size_t pack_bytes = 64;
@@ -245,40 +252,38 @@ template <typename T>
 using ConstRef = std::type_identity_t<MatrixRef<const T>>;
 
 // Kernels. Sizes may be zero, and outputs never overlap inputs.
+//
+// Each kernel is a plain loop, which the compiler inlines and vectorizes itself where it can. With vector
+// extensions, vectors of at least `simd_length` elements go to an out-of-line version on SIMD registers
+// instead: below that length setting up and reducing the registers costs more than it saves, and inlining the
+// SIMD code would keep the compiler from inlining the plain loops.
+
+/// A plane rotation [c s; -s c].
+template <typename T>
+struct Rotation {
+    T c;
+    T s;
+};
+
+#if HLQ_VECTOR_EXTENSIONS
+namespace simd {
 
 template <typename T>
-[[nodiscard]] T dot(const T* a, const T* b, Index n) noexcept {
-    Index i = 0;
-    T s = 0;
-#if HLQ_VECTOR_EXTENSIONS
+[[gnu::noinline]] T dot(const T* a, const T* b, Index n) noexcept {
     using S = Simd<T>;
     constexpr Index w = S::width;
-    if (n >= w) {
-        typename S::Pack s0{};
-        typename S::Pack s1{};
-        for (; i + 2 * w <= n; i += 2 * w) {
-            s0 += S::load(a + i) * S::load(b + i);
-            s1 += S::load(a + i + w) * S::load(b + i + w);
-        }
-        if (i + w <= n) {
-            s0 += S::load(a + i) * S::load(b + i);
-            i += w;
-        }
-        s = S::sum(s0 + s1);
+    typename S::Pack s0{};
+    typename S::Pack s1{};
+    Index i = 0;
+    for (; i + 2 * w <= n; i += 2 * w) {
+        s0 += S::load(a + i) * S::load(b + i);
+        s1 += S::load(a + i + w) * S::load(b + i + w);
     }
-#else
-    // Four partial sums pipeline without reassociation by the compiler.
-    T s1 = 0;
-    T s2 = 0;
-    T s3 = 0;
-    for (; i + 4 <= n; i += 4) {
-        s += a[i] * b[i];
-        s1 += a[i + 1] * b[i + 1];
-        s2 += a[i + 2] * b[i + 2];
-        s3 += a[i + 3] * b[i + 3];
+    if (i + w <= n) {
+        s0 += S::load(a + i) * S::load(b + i);
+        i += w;
     }
-    s = (s + s1) + (s2 + s3);
-#endif
+    T s = S::sum(s0 + s1);
     for (; i < n; ++i) {
         s += a[i] * b[i];
     }
@@ -286,54 +291,25 @@ template <typename T>
 }
 
 template <typename T>
-[[nodiscard]] T squared_norm(const T* x, Index n) noexcept {
-    return dot(x, x, n);
-}
-
-/// y <- y + alpha x.
-template <typename T>
-void axpy(T alpha, const T* x, T* y, Index n) noexcept {
-    Index i = 0;
-#if HLQ_VECTOR_EXTENSIONS
+[[gnu::noinline]] void axpy(T alpha, const T* x, T* y, Index n) noexcept {
     using S = Simd<T>;
     const auto a = S::splat(alpha);
+    Index i = 0;
     for (; i + S::width <= n; i += S::width) {
         S::store(y + i, S::load(y + i) + a * S::load(x + i));
     }
-#endif
     for (; i < n; ++i) {
         y[i] += alpha * x[i];
     }
 }
 
-template <typename T>
-void scale(T alpha, T* x, Index n) noexcept {
-    for (Index i = 0; i < n; ++i) {
-        x[i] *= alpha;
-    }
-}
-
-/// Index of the largest of `n >= 1` values, the first one on ties.
-template <typename T>
-[[nodiscard]] Index argmax(const T* x, Index n) noexcept {
-    Index best = 0;
-    for (Index i = 1; i < n; ++i) {
-        if (x[i] > x[best]) {
-            best = i;
-        }
-    }
-    return best;
-}
-
-/// The largest of `n >= 1` values.
-template <typename T>
-[[nodiscard]] T max_of(const T* x, Index n) noexcept {
-    return x[argmax(x, n)];
-}
-
 /// y <- y + alpha A x (or y <- A x, without `Add`), four rows of A at a time.
-template <bool Add = false, typename T>
-void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
+template <bool Add, typename T>
+[[gnu::noinline]] void multiply(MatrixRef<const T> a, const T* x, T* y, T alpha) noexcept {
+    using S = Simd<T>;
+    constexpr Index w = S::width;
+    const Index n = a.cols;
+    const Index packed = n - n % w;
     const auto put = [&](Index i, T value) {
         if constexpr (Add) {
             y[i] += alpha * value;
@@ -342,11 +318,6 @@ void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
         }
     };
     Index i = 0;
-#if HLQ_VECTOR_EXTENSIONS
-    using S = Simd<T>;
-    constexpr Index w = S::width;
-    const Index n = a.cols;
-    const Index packed = n - n % w;
     for (; i + 4 <= a.rows; i += 4) {
         const T* r0 = a.row(i);
         const T* r1 = a.row(i + 1);
@@ -378,21 +349,19 @@ void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
         put(i + 2, t2);
         put(i + 3, t3);
     }
-#endif
     for (; i < a.rows; ++i) {
-        put(i, dot(a.row(i), x, a.cols));
+        put(i, dot(a.row(i), x, n));
     }
 }
 
 /// y <- y + alpha A^T x, four rows of A at a time.
 template <typename T>
-void multiply_transposed_add(T alpha, ConstRef<T> a, const T* x, T* y) noexcept {
-    Index i = 0;
-#if HLQ_VECTOR_EXTENSIONS
+[[gnu::noinline]] void multiply_transposed_add(T alpha, MatrixRef<const T> a, const T* x, T* y) noexcept {
     using S = Simd<T>;
     constexpr Index w = S::width;
     const Index n = a.cols;
     const Index packed = n - n % w;
+    Index i = 0;
     for (; i + 4 <= a.rows; i += 4) {
         const T* r0 = a.row(i);
         const T* r1 = a.row(i + 1);
@@ -415,8 +384,132 @@ void multiply_transposed_add(T alpha, ConstRef<T> a, const T* x, T* y) noexcept 
             y[j] += (c0 * r0[j] + c1 * r1[j]) + (c2 * r2[j] + c3 * r3[j]);
         }
     }
-#endif
     for (; i < a.rows; ++i) {
+        axpy(alpha * x[i], a.row(i), y, n);
+    }
+}
+
+template <typename T>
+[[gnu::noinline]] void rotate(Rotation<T> g, T* x, T* y, Index n) noexcept {
+    using S = Simd<T>;
+    const auto c = S::splat(g.c);
+    const auto s = S::splat(g.s);
+    Index i = 0;
+    for (; i + S::width <= n; i += S::width) {
+        const auto a = S::load(x + i);
+        const auto b = S::load(y + i);
+        S::store(x + i, c * a + s * b);
+        S::store(y + i, c * b - s * a);
+    }
+    for (; i < n; ++i) {
+        const T a = x[i];
+        const T b = y[i];
+        x[i] = g.c * a + g.s * b;
+        y[i] = g.c * b - g.s * a;
+    }
+}
+
+}  // namespace simd
+#endif
+
+template <typename T>
+[[nodiscard]] T dot(const T* a, const T* b, Index n) noexcept {
+#if HLQ_VECTOR_EXTENSIONS
+    if (n >= simd_length) {
+        return simd::dot(a, b, n);
+    }
+#endif
+    // Four partial sums pipeline (and vectorize) without reassociation by the compiler.
+    T s0 = 0;
+    T s1 = 0;
+    T s2 = 0;
+    T s3 = 0;
+    Index i = 0;
+    for (; i + 4 <= n; i += 4) {
+        s0 += a[i] * b[i];
+        s1 += a[i + 1] * b[i + 1];
+        s2 += a[i + 2] * b[i + 2];
+        s3 += a[i + 3] * b[i + 3];
+    }
+    for (; i < n; ++i) {
+        s0 += a[i] * b[i];
+    }
+    return (s0 + s1) + (s2 + s3);
+}
+
+template <typename T>
+[[nodiscard]] T squared_norm(const T* x, Index n) noexcept {
+    return dot(x, x, n);
+}
+
+/// y <- y + alpha x.
+template <typename T>
+void axpy(T alpha, const T* x, T* y, Index n) noexcept {
+#if HLQ_VECTOR_EXTENSIONS
+    if (n >= simd_length) {
+        simd::axpy(alpha, x, y, n);
+        return;
+    }
+#endif
+    for (Index i = 0; i < n; ++i) {
+        y[i] += alpha * x[i];
+    }
+}
+
+template <typename T>
+void scale(T alpha, T* x, Index n) noexcept {
+    for (Index i = 0; i < n; ++i) {
+        x[i] *= alpha;
+    }
+}
+
+/// Index of the largest of `n >= 1` values, the first one on ties.
+template <typename T>
+[[nodiscard]] Index argmax(const T* x, Index n) noexcept {
+    Index best = 0;
+    for (Index i = 1; i < n; ++i) {
+        if (x[i] > x[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+/// The largest of `n >= 1` values.
+template <typename T>
+[[nodiscard]] T max_of(const T* x, Index n) noexcept {
+    return x[argmax(x, n)];
+}
+
+/// y <- y + alpha A x (or y <- A x, without `Add`).
+template <bool Add = false, typename T>
+void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
+#if HLQ_VECTOR_EXTENSIONS
+    if (a.cols >= simd_length) {
+        simd::multiply<Add>(a, x, y, alpha);
+        return;
+    }
+#endif
+    for (Index i = 0; i < a.rows; ++i) {
+        const T value = dot(a.row(i), x, a.cols);
+        if constexpr (Add) {
+            y[i] += alpha * value;
+        } else {
+            y[i] = value;
+        }
+    }
+}
+
+/// y <- y + alpha A^T x.
+template <typename T>
+void multiply_transposed_add(T alpha, ConstRef<T> a, const T* x, T* y) noexcept {
+#if HLQ_VECTOR_EXTENSIONS
+    if (a.cols >= simd_length) {
+        simd::multiply_transposed_add(alpha, a, x, y);
+        return;
+    }
+#endif
+    for (Index i = 0; i < a.rows; ++i) {
         axpy(alpha * x[i], a.row(i), y, a.cols);
     }
 }
@@ -438,13 +531,6 @@ void solve_lower_transposed(ConstRef<T> l, T* x) noexcept {
     }
 }
 
-/// A plane rotation [c s; -s c].
-template <typename T>
-struct Rotation {
-    T c;
-    T s;
-};
-
 /// The rotation that maps (a, b) to (r, 0), with r = c a + s b, without overflow.
 template <typename T>
 [[nodiscard]] Rotation<T> make_rotation(T a, T b) noexcept {
@@ -464,19 +550,13 @@ template <typename T>
 /// (x, y) <- (c x + s y, c y - s x), elementwise over `n` contiguous pairs.
 template <typename T>
 void rotate(Rotation<T> g, T* x, T* y, Index n) noexcept {
-    Index i = 0;
 #if HLQ_VECTOR_EXTENSIONS
-    using S = Simd<T>;
-    const auto c = S::splat(g.c);
-    const auto s = S::splat(g.s);
-    for (; i + S::width <= n; i += S::width) {
-        const auto a = S::load(x + i);
-        const auto b = S::load(y + i);
-        S::store(x + i, c * a + s * b);
-        S::store(y + i, c * b - s * a);
+    if (n >= simd_length) {
+        simd::rotate(g, x, y, n);
+        return;
     }
 #endif
-    for (; i < n; ++i) {
+    for (Index i = 0; i < n; ++i) {
         const T a = x[i];
         const T b = y[i];
         x[i] = g.c * a + g.s * b;
