@@ -223,6 +223,7 @@ public:
         changes_ = 0;
         locked_.head(rows_) = equality_.head(rows_);
         lq_.factor(factored_rows(), active_, level_ends_, noise_);
+        changed_ = 0;
         forward();
         point_ = primal_;
 
@@ -238,6 +239,7 @@ public:
                 if (appended) {
                     lq_.append(factored_rows(), active_, h == 0 ? 0 : level_ends_(h - 1), level_ends_(h),
                                noise_);
+                    changed_ = std::min(changed_, h);
                 }
                 if (activate_violated(h) > 0 || appended) {
                     forward();
@@ -299,6 +301,7 @@ public:
             while (lq_.factored() < levels_) {
                 const Index k = lq_.factored();
                 lq_.append(factored_rows(), active_, k == 0 ? 0 : level_ends_(k - 1), level_ends_(k), noise_);
+                changed_ = std::min(changed_, k);
             }
             forward();
         }
@@ -433,11 +436,12 @@ private:
     /// Solution of the active set, and the residual of each active row.
     void forward() noexcept {
         const Index size = lq_.size();
-        for (Index p = 0; p < size; ++p) {
+        for (Index p = lq_.begin(changed_); p < size; ++p) {
             const Index i = lq_.row(p);
             goal_(p) = (lower_side_(i) ? lower_(i) : upper_(i)) - at_reference_(i);
         }
-        lq_.solve(goal_, residual_, step_);
+        lq_.solve(goal_, residual_, step_, changed_);
+        changed_ = levels_;
         primal_ = reference_;
         if (identity_metric_) {
             primal_ += step_;
@@ -458,13 +462,16 @@ private:
         trim();
         active_(row) = true;
         lower_side_(row) = at_lower;
-        lq_.insert(factored_rows(), row, level_of(row), noise_);
+        const Index level = level_of(row);
+        lq_.insert(factored_rows(), row, level, noise_);
+        changed_ = std::min(changed_, level);
     }
 
     void deactivate(Index row) noexcept {
         trim();
         active_(row) = false;
         locked_(row) = false;
+        changed_ = std::min(changed_, level_of(row));
         lq_.remove(row, noise_);
     }
 
@@ -532,7 +539,8 @@ private:
     bool has_problem_ = false;
     bool scaled_valid_ = false;
     bool identity_metric_ = true;
-    Index phase_ = 0;  // level being solved, or levels_ for the choice among the optima
+    Index phase_ = 0;    // level being solved, or levels_ for the choice among the optima
+    Index changed_ = 0;  // first level whose active rows changed since the last forward solve
     Status status_ = Status::NoProblem;
     Settings<Scalar> settings_;
     Index changes_ = 0;
