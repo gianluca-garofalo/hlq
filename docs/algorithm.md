@@ -194,7 +194,9 @@ $$
 
 which lies in $\mathcal R(F_k)$, spanned by the first $r_k$ columns of $H_k$. When $s_k = 0$, $\lambda_k = -(K_k^a)^{-\top} \theta_k$.
 
-**The final choice among the optima.** After the last level, the solution minimizes $\tfrac12 \lVert \tilde x - \tilde x^{(0)} \rVert^2$ (metric coordinates) over $S_m$. That is one more subproblem, whose gradient is the step $\hat Q^\top y$ itself, and every level is above it: its multipliers are (12) started from $\theta = y$ and run from $k = m$ down (`PriorityLQ::multipliers` with `h == levels`).
+**The final choice among the optima.** After the last level, the solution minimizes $\tfrac12 \lVert \tilde x - \tilde x^{(0)} \rVert^2$ (metric coordinates) over $S_m$. That is one more subproblem, whose gradient is the step $\hat Q^\top y$ itself, and every level is above it: its multipliers are (12) started from $\theta = y$ and run from $k = m$ down (`PriorityLQ::multipliers` with `h` the number of levels factored).
+
+**A last level that is the final choice.** If level $m$ consists of equalities $F x = b$ and $F$ has full column rank, it leaves a single point: on $S_{m-1}$ it minimizes $\lVert F x - b \rVert^2 = (x - r)^\top F^\top F (x - r) + c$, with $r = F^+ b$ and $c$ a constant. That is the final choice among the optima of levels $1, \dots, m-1$ in the metric $W = F^\top F$ with reference $r$, so hlq does not search the level: with $F = Q R$ it takes $C = R^{-1}$ and $r = R^{-1} Q^\top b$ (`Solver::fold`). A regularization such as $x = 0$ then costs nothing. The level is reported as if it had been searched. Its cost is computed from the solution, and its rank is $n$ minus the ranks above. In its subproblem the gradient $F^\top (F x - b) = W (x - r)$ is that of the final choice, so the multipliers of the levels above are the final choice's, and those of its own rows are their residuals. A level conditioned worse than $1 / \sqrt{\epsilon}$ is searched instead, and `Settings::fold_final_level` turns the fold off.
 
 ### 7. Example 1 (equalities, a conflict, a dependent row)
 

@@ -107,3 +107,23 @@ def test_random_problems_match_a_least_squares_check():
         solver.set_problem(a, b, b, [m])
         assert solver.solve() == hlq.Status.Solved
         np.testing.assert_allclose(solver.solution, np.linalg.lstsq(a, b, rcond=None)[0], atol=1e-10)
+
+
+def test_final_level_folded_or_searched_alike():
+    rng = np.random.default_rng(3)
+    a = np.vstack([rng.normal(size=(4, 3)), np.eye(3)])
+    lower = np.concatenate([rng.normal(size=4) - 1, np.zeros(3)])
+    upper = np.concatenate([lower[:4] + 0.5, np.zeros(3)])
+    results = []
+    for fold in (True, False):
+        solver = hlq.Solver(max_rows=7, cols=3)
+        settings = solver.settings
+        settings.fold_final_level = fold
+        solver.settings = settings
+        solver.set_problem(a, lower, upper, [4, 7])
+        assert solver.solve() == hlq.Status.Solved
+        results.append((solver.solution, solver.multipliers(1), solver.rank(1)))
+    np.testing.assert_allclose(results[0][0], results[1][0], atol=1e-12)
+    np.testing.assert_allclose(results[0][1], results[1][1], atol=1e-10)
+    assert results[0][2] == results[1][2]
+    assert "fold_final_level=True" in repr(hlq.Settings())

@@ -71,11 +71,16 @@ void bind_settings(nb::module_& m, const char* name) {
         .def_rw("dual_tolerance", &Settings::dual_tolerance,
                 "Relative magnitude below which a multiplier is zero.")
         .def_rw("max_changes", &Settings::max_changes, "Maximum active-set changes in one solve.")
+        .def_rw(
+            "fold_final_level", &Settings::fold_final_level,
+            "Take a last level of equalities with full column rank, such as x = 0, as the choice among the "
+            "optima instead of searching it.")
         .def("__repr__", [](const Settings& s) {
             std::ostringstream out;
             out << "Settings(feasibility_tolerance=" << s.feasibility_tolerance
                 << ", rank_tolerance=" << s.rank_tolerance << ", dual_tolerance=" << s.dual_tolerance
-                << ", max_changes=" << s.max_changes << ")";
+                << ", max_changes=" << s.max_changes
+                << ", fold_final_level=" << (s.fold_final_level ? "True" : "False") << ")";
             return out.str();
         });
 }

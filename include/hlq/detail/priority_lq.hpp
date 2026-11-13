@@ -98,9 +98,11 @@ public:
      * @param level_end end of each level in `rows`
      * @param noise     rank threshold of each level: absolute, compared with what a row has outside the rows
      *                  before it
+     * @param count     number of levels to factor, the first ones (all by default); `append` adds the others
      */
     template <typename Active, typename Ends>
-    void factor(Rows rows, const Active& active, const Ends& level_end, const LevelsVector& noise) {
+    void factor(Rows rows, const Active& active, const Ends& level_end, const LevelsVector& noise,
+                Index count = -1) {
         size_ = 0;
         factored_ = 0;
         for (Index k = 0, i = 0; k < levels_; ++k) {
@@ -111,7 +113,8 @@ public:
             }
         }
         begin_(levels_) = 0;
-        for (Index k = 0, i = 0; k < levels_; ++k) {
+        count = count < 0 ? levels_ : count;
+        for (Index k = 0, i = 0; k < count; ++k) {
             append(rows, active, i, static_cast<Index>(level_end(k)), noise);
             i = static_cast<Index>(level_end(k));
         }
@@ -395,15 +398,16 @@ public:
      * Multipliers of the positions of levels <= h in the subproblem of level h: the residuals of level h, and
      * for each level above, the minimum-norm multipliers that balance what the levels below it leave.
      *
-     * `h == levels` is the final choice among the optima, the step's squared norm: its gradient is the step,
-     * whose coordinates on Q are those of the last solve, and every level is above it.
+     * `h == factored()` is the final choice among the optima, the step's squared norm: its gradient is the
+     * step, whose coordinates on Q are those of the last solve, and every level in the factorization is above
+     * it.
      *
      * Uses the residuals and coordinates of the last `solve`, with no change to the active rows since.
      */
     void multipliers(Index h, const RowsVector& residual, RowsVector& dual) {
         const Index start = begin_(h);
         Scalar* theta = theta_.data();
-        if (h == levels_) {
+        if (h >= factored_) {
             std::copy_n(coords_.data(), start, theta);
         } else {
             const Index dim = begin_(h + 1) - start;
@@ -415,8 +419,24 @@ public:
             multiply_transposed_add(Scalar(1), coefs_.block(start, 0, dim, start), residual.data() + start,
                                     theta);
         }
+        backward(std::min(h, factored_), theta, dual);
+    }
 
-        for (Index k = h - 1; k >= 0; --k) {
+    /**
+     * Multipliers of every position for an objective of the given gradient (in the coordinates of the rows)
+     * above all the levels in the factorization: the minimum-norm ones within each level, as `multipliers`.
+     * Uses the QRs of the last `solve`.
+     */
+    void multipliers_of(const Scalar* gradient, RowsVector& dual) {
+        Scalar* theta = theta_.data();
+        multiply(basis_.block(0, 0, size_, cols_), gradient, theta);
+        backward(factored_, theta, dual);
+    }
+
+private:
+    /// Backward substitution through the levels before `above`, from theta, the gradient's coordinates.
+    void backward(Index above, Scalar* theta, RowsVector& dual) {
+        for (Index k = above - 1; k >= 0; --k) {
             const Index first = begin_(k);
             const Index size = begin_(k + 1) - first;
             const Index rank = rank_(k);
@@ -447,7 +467,6 @@ public:
         }
     }
 
-private:
     /// Downdated squared norms are recomputed below this fraction of where they started.
     static Scalar recompute_below() noexcept { return std::sqrt(std::numeric_limits<Scalar>::epsilon()); }
 

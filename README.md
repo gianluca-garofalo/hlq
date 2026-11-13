@@ -121,12 +121,12 @@ class hlq::Solver;
 | `solve()` | `Status::Solved`, or `Status::MaxChanges` when the search stopped early |
 | `solution()`, `violation()`, `level_cost(k)` | the point, $A x$ minus its clamp to the bounds (both `std::span`s into the solver), and each level's squared violation |
 | `activity(i)`, `rank(k)`, `multipliers(k)` | the active set, the rank of each level, the multipliers of each level's subproblem |
-| `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes` |
+| `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes`, `fold_final_level` |
 | `reset()` | forgets the active set |
 
 The defaults suit data of order one: tolerances of $10^{-9}$ in double and $10^{-5}$ in float. The rank tolerance is relative to the longest row of each level, and the dual tolerance to the largest multiplier of each subproblem.
 
-A final regularization level such as $x = 0$ is not needed: hlq's own choice among the optima (the minimum norm, or the closest point to the reference) gives the same solution, faster.
+A final regularization level such as $x = 0$ costs nothing. hlq takes any last level of equalities with full column rank ($x = 0$, $x = x_{\text{prev}}$, a weighted one) as its own choice among the optima instead of searching it, with the same solution, costs, ranks and multipliers; `settings().fold_final_level = false` searches it like any other level.
 
 ## Verification and performance
 
@@ -145,11 +145,11 @@ Cold solves from data to solution (setup included), median of 5 runs, on one cor
 
 | Family | hlq | hlq without the final $x = 0$ level | HierarchicalQP | LexLS | DAQP |
 |---|---|---|---|---|---|
-| random (2–8 variables) | 11 µs | 7.8 µs | 16 µs | 21 µs | 4.4 µs |
-| degenerate (3 variables) | 4.1 µs | | 5.6 µs | 7.2 µs | 2.9 µs |
-| large (20–40 variables) | 163 µs | 73 µs | 659 µs | 597 µs | 53 µs |
+| random (2–8 variables) | 8.2 µs | 7.7 µs | 18 µs | 21 µs | 4.5 µs |
+| degenerate (3 variables) | 3.2 µs | | 5.4 µs | 7.1 µs | 2.7 µs |
+| large (20–40 variables) | 83 µs | 72 µs | 662 µs | 588 µs | 56 µs |
 
-DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and nine times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
+DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: seven to eight times as fast as HierarchicalQP and LexLS on the large family. The final $x = 0$ level of these problems costs it little, since it is taken as hlq's own choice among the optima. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
 
 CI reruns both on every pull request (see the Comparisons workflow's summary). Known limits are listed at the end of [docs/algorithm.md](docs/algorithm.md).
 
