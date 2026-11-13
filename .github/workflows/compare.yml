@@ -1,0 +1,40 @@
+name: Comparisons
+
+# hlq against LexLS, DAQP and HierarchicalQP: lexicographic verdicts on the random families, and timings.
+on:
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Eigen (DAQP's Eigen interface needs an installed one)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeigen3-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DHLQ_BUILD_TESTS=OFF -DHLQ_BUILD_BENCHMARKS=ON -DHLQ_BUILD_COMPARISONS=ON
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Compare solutions
+        run: |
+          build/benchmarks/hlq_compare 2000 | tee comparison.txt
+          { echo '## Solutions'; echo '```'; cat comparison.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Time the solvers
+        run: |
+          build/benchmarks/hlq_compare_benchmarks --benchmark_min_time=0.2s | tee timings.txt
+          { echo '## Timings'; echo '```'; cat timings.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
