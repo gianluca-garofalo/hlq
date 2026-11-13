@@ -189,6 +189,7 @@ public:
         // x = C z with C = U^-1 and W = U^T U, so that the metric becomes the identity in z.
         metric_inv_.setIdentity();
         llt.matrixU().solveInPlace(metric_inv_);
+        identity_metric_ = metric_inv_.isIdentity(Scalar(0));
         scaled_valid_ = false;
         return has_problem_ ? (status_ = Status::Ready) : Status::NoProblem;
     }
@@ -221,7 +222,7 @@ public:
         prepare_rows();
         changes_ = 0;
         locked_.head(rows_) = equality_.head(rows_);
-        lq_.factor(scaled_, active_, level_ends_, noise_);
+        lq_.factor(factored_rows(), active_, level_ends_, noise_);
         forward();
         point_ = primal_;
 
@@ -390,17 +391,22 @@ private:
         return Status::Ready;
     }
 
+    /// The rows that are factored: the rows of the problem in the coordinates of the metric.
+    [[nodiscard]] const Matrix& factored_rows() const noexcept {
+        return identity_metric_ ? matrix_ : scaled_;
+    }
+
     /// Rows in the coordinates of the metric, and the rank threshold of each level.
     void prepare_rows() noexcept {
-        if (!scaled_valid_) {
+        if (!scaled_valid_ && !identity_metric_) {
             scaled_.topRows(rows_).noalias() = matrix_.topRows(rows_) * metric_inv_;
-            scaled_valid_ = true;
         }
+        scaled_valid_ = true;
         at_reference_.head(rows_).noalias() = matrix_.topRows(rows_) * reference_;
         // Absolute: rounding noise scales with the longest row of a level, not with what is left of a row.
         for (Index k = 0, begin = 0; k < levels_; ++k) {
             const Index end = level_ends_(k);
-            const auto level = scaled_.middleRows(begin, end - begin);
+            const auto level = factored_rows().middleRows(begin, end - begin);
             noise_(k) =
                 end > begin ? settings_.rank_tolerance * level.rowwise().norm().maxCoeff() : Scalar(0);
             begin = end;
@@ -416,13 +422,17 @@ private:
         }
         lq_.solve(goal_, residual_, step_);
         primal_ = reference_;
-        primal_.noalias() += metric_inv_ * step_;
+        if (identity_metric_) {
+            primal_ += step_;
+        } else {
+            primal_.noalias() += metric_inv_ * step_;
+        }
     }
 
     void activate(Index row, bool at_lower) noexcept {
         active_(row) = true;
         lower_side_(row) = at_lower;
-        lq_.insert(scaled_, row, level_of(row), noise_);
+        lq_.insert(factored_rows(), row, level_of(row), noise_);
     }
 
     void deactivate(Index row) noexcept {
@@ -494,12 +504,13 @@ private:
     Index levels_ = 0;
     bool has_problem_ = false;
     bool scaled_valid_ = false;
+    bool identity_metric_ = true;
     Status status_ = Status::NoProblem;
     Settings<Scalar> settings_;
     Index changes_ = 0;
 
     Matrix matrix_;  // rows of the problem
-    Matrix scaled_;  // rows times metric_inv_: the rows that are factored
+    Matrix scaled_;  // rows times metric_inv_: the rows that are factored, unless the metric is the identity
     ConstraintVector lower_;
     ConstraintVector upper_;
     LevelEnds level_ends_;
