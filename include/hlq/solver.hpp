@@ -89,6 +89,7 @@ public:
           residual_(max_rows),
           dual_(max_rows),
           values_(max_rows),
+          at_reference_(max_rows),
           violation_(max_rows),
           multipliers_(max_rows),
           step_(cols),
@@ -395,6 +396,7 @@ private:
             scaled_.topRows(rows_).noalias() = matrix_.topRows(rows_) * metric_inv_;
             scaled_valid_ = true;
         }
+        at_reference_.head(rows_).noalias() = matrix_.topRows(rows_) * reference_;
         // Absolute: rounding noise scales with the longest row of a level, not with what is left of a row.
         for (Index k = 0, begin = 0; k < levels_; ++k) {
             const Index end = level_ends_(k);
@@ -410,7 +412,7 @@ private:
         const Index size = lq_.size();
         for (Index p = 0; p < size; ++p) {
             const Index i = lq_.row(p);
-            goal_(p) = (lower_side_(i) ? lower_(i) : upper_(i)) - matrix_.row(i).dot(reference_);
+            goal_(p) = (lower_side_(i) ? lower_(i) : upper_(i)) - at_reference_(i);
         }
         lq_.solve(goal_, residual_, step_);
         primal_ = reference_;
@@ -515,6 +517,7 @@ private:
     ConstraintVector residual_;
     ConstraintVector dual_;
     ConstraintVector values_;
+    ConstraintVector at_reference_;  // A times the reference
     ConstraintVector violation_;
     ConstraintVector multipliers_;
     Vector step_;
