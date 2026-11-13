@@ -118,10 +118,11 @@ public:
     Storage& operator=(Storage&&) noexcept = default;
     ~Storage() = default;
 
-    /// Makes room for `size` elements. Allocates (zeros, keeping nothing) only when that is more than before.
+    /// Makes room for `size` elements. Allocates (keeping nothing, and leaving the elements uninitialized, as
+    /// every user writes before it reads) only when that is more than before.
     void reserve(Index size) {
         if (size > capacity_) {
-            data_ = std::make_unique<T[]>(static_cast<std::size_t>(size));
+            data_.reset(new T[static_cast<std::size_t>(size)]);
             capacity_ = size;
         }
     }
