@@ -109,7 +109,7 @@ The pivot search keeps the residual norms of the level and downdates them, $\lVe
 **Lemma 2.** $B_k = A_k P_{k-1} = F_k \hat Q_k$, and $F_k$ has full column rank $r_k$.
 *Proof.* $A_k = \sum_{j \le k} K_{kj} \hat Q_j$, $\hat Q_j P_{k-1} = 0$ for $j < k$, and $\hat Q_k P_{k-1} = \hat Q_k$ (Lemma 1). The rows $\mathcal J_k$ of $F_k$ form a lower triangular $r_k \times r_k$ matrix with diagonal $\kappa_{ii} > 0$. $\square$
 
-So the level-$k$ block of $K$ is the level's projected rows written in a basis that all levels share, and $`\mathrm{rank}\, B_k = r_k`$. The null-space basis $Z_k$ of the classical formulation is any orthonormal basis of the complement of $\hat Q_1, \dots, \hat Q_k$; it is never needed. $\bar A \hat Q^\top = K[:, \mathcal J]$ is block lower triangular with full-column-rank diagonal blocks.
+So the block of level $k$ in $K$ is the level's projected rows written in a basis that all levels share, and $`\mathrm{rank}\, B_k = r_k`$. The null-space basis $Z_k$ of the classical formulation is any orthonormal basis of the complement of $\hat Q_1, \dots, \hat Q_k$; it is never needed. $\bar A \hat Q^\top = K[:, \mathcal J]$ is block lower triangular with full-column-rank diagonal blocks.
 
 **Gram form.** $G := \bar A \bar A^\top = K K^\top$, and the Schur complement of $G$ after the levels before $k$ is $F_k F_k^\top = B_k B_k^\top$. With $K = L D^{1/2}$, this is the LDL factorization of DAQP's $M = A_W H^{-1} A_W^\top$ (with $H = I$), taken in priority order. §16 explains why $G$ itself should not be formed.
 
@@ -257,9 +257,9 @@ $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the curr
 1. **For $h = 1, \dots, m + 1$:** phase $m + 1$ is the final choice among the optima (§6).
    1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
-      ```math
-      t_i = \mathrm{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}
-      ```
+
+      $$t_i = \mathrm{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}$$
+
       The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2.
    3. **Drop test.** Set $\hat x \leftarrow \bar x$ and compute the multipliers of subproblem $h$ (§6). For a level's own rows these are its residuals, $\lambda_i = \rho_i$. Let $i$ be the unlocked row of $W$ in levels $\le h$ that maximizes $-\sigma_i \lambda_i$. If $-\sigma_i \lambda_i > z_h$, remove it (§12) and go back to step 2.
    4. **Lock.** Lock every row of $W$ in levels $\le h$ with $\sigma_i \lambda_i > z_h$, then go to the next $h$.
