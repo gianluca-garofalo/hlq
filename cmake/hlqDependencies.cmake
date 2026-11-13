@@ -24,3 +24,26 @@ function(hlq_find_eigen)
     set_target_properties(Eigen3::Eigen PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${hlq_eigen_SOURCE_DIR}")
     message(STATUS "hlq: Eigen 3.4.0 downloaded to ${hlq_eigen_SOURCE_DIR}")
 endfunction()
+
+# GoogleTest for the tests.
+function(hlq_find_gtest)
+    if(TARGET GTest::gtest_main)
+        return()
+    endif()
+    find_package(GTest 1.11 QUIET CONFIG)
+    if(GTest_FOUND)
+        return()
+    endif()
+    if(NOT HLQ_FETCH_DEPENDENCIES)
+        message(FATAL_ERROR "hlq: GoogleTest not found (or set HLQ_FETCH_DEPENDENCIES=ON)")
+    endif()
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.15.2
+        GIT_SHALLOW TRUE
+        SYSTEM)
+    FetchContent_MakeAvailable(googletest)
+endfunction()
