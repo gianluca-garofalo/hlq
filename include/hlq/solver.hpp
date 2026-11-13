@@ -207,8 +207,8 @@ public:
 
     /// Forgets the active set, so that the next solve starts from the equalities only.
     void reset() noexcept {
-        active_.setZero();
-        lower_side_.setZero();
+        active_ = equality_;
+        lower_side_ = equality_;
         locked_.setZero();
     }
 
