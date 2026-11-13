@@ -24,7 +24,7 @@ No null-space basis $Z_k$ is ever formed.
 - $X^\dagger$: Moore–Penrose pseudo-inverse.
 - $\tau$: the rank tolerance, `Settings::rank_tolerance` ($10^{-9}$ in double); $\epsilon_k := \tau \max_{i \in \text{level } k} \lVert a_i \rVert$ is the absolute rank threshold of level $k$, written $\epsilon$ when the level is clear.
 - $\mathcal I_k$: indices of the rows of level $k$ in factor order; $\mathcal J_k \subseteq \mathcal I_k$: its independent rows; $r_k := |\mathcal J_k|$, $s_k := m_k - r_k$.
-- $\mathcal J := \bigcup_k \mathcal J_k$, $r := |\mathcal J| = \mathrm{rank}\, \bar A$.
+- $\mathcal J := \bigcup_k \mathcal J_k$, $`r := |\mathcal J| = \mathrm{rank}\, \bar A`$.
 - $K$, $Q$: the factors of §3; $\kappa_{ij}$ are the entries of $K$, and $q_i$ the rows of $Q$.
 - Sub-blocks:
   - $\hat Q_k := Q[\mathcal J_k, :]$ ($r_k \times n$) and $\hat Q := Q[\mathcal J, :]$ ($r \times n$);
@@ -38,15 +38,15 @@ No null-space basis $Z_k$ is ever formed.
 
 The hierarchy is defined lexicographically. Set $S_0 := \mathbb R^n$ and, for $k = 1, \dots, m$,
 
-$$
+```math
 S_k := \arg\min_{x \in S_{k-1}} \tfrac12 \lVert A_k x - b_k \rVert^2 \tag{1}
-$$
+```
 
 The solution is the point of $S_m$ closest to a given reference $x^{(0)}$:
 
-$$
+```math
 x^\star := \arg\min_{x \in S_m} \tfrac12 \lVert x - x^{(0)} \rVert^2 \tag{2}
-$$
+```
 
 Three preprocessing steps bring every problem to this form with $\Lambda_k = I$, the Euclidean metric and $x^{(0)} = 0$:
 
@@ -60,16 +60,16 @@ From here on, $x^{(0)} = 0$ unless stated otherwise.
 
 Define $B_k := A_k P_{k-1}$ (the rows of level $k$ projected onto what the higher levels leave free) and
 
-$$
+```math
 g_k := b_k - A_k x^{(k-1)}, \qquad x^{(k)} := x^{(k-1)} + B_k^\dagger g_k \tag{3}
-$$
+```
 
 **Claim.** $S_k = x^{(k)} + \mathcal N(\bar A_k)$ for every $k$, and $x^\star = x^{(m)}$.
 
 *Proof.* By induction; $S_0 = 0 + \mathcal N(\bar A_0) = \mathbb R^n$.
-- **Restrict to $S_{k-1}$.** By the induction hypothesis, $S_{k-1} = \{x^{(k-1)} + \delta : \delta \in \mathcal N(\bar A_{k-1})\}$. For such $\delta$, $A_k \delta = A_k P_{k-1} \delta = B_k \delta$, so (1) is $\min \tfrac12 \lVert B_k \delta - g_k \rVert^2$ over $\delta \in \mathcal N(\bar A_{k-1})$.
+- **Restrict to $S_{k-1}$.** By the induction hypothesis, $`S_{k-1} = \{x^{(k-1)} + \delta : \delta \in \mathcal N(\bar A_{k-1})\}`$. For such $\delta$, $A_k \delta = A_k P_{k-1} \delta = B_k \delta$, so (1) is $\min \tfrac12 \lVert B_k \delta - g_k \rVert^2$ over $\delta \in \mathcal N(\bar A_{k-1})$.
 - **Minimizers.** Over all of $\mathbb R^n$ the minimizers are $B_k^\dagger g_k + \mathcal N(B_k)$. Moreover $B_k^\dagger g_k \in \mathcal R(B_k^\top) = \mathcal R(P_{k-1} A_k^\top) \subseteq \mathcal N(\bar A_{k-1})$, so it is feasible.
-- **Feasible minimizers.** They are $B_k^\dagger g_k + \big(\mathcal N(B_k) \cap \mathcal N(\bar A_{k-1})\big)$, and $\mathcal N(B_k) \cap \mathcal N(\bar A_{k-1}) = \{\delta \in \mathcal N(\bar A_{k-1}) : A_k \delta = 0\} = \mathcal N(\bar A_k)$.
+- **Feasible minimizers.** They are $B_k^\dagger g_k + \big(\mathcal N(B_k) \cap \mathcal N(\bar A_{k-1})\big)$, and $`\mathcal N(B_k) \cap \mathcal N(\bar A_{k-1}) = \{\delta \in \mathcal N(\bar A_{k-1}) : A_k \delta = 0\} = \mathcal N(\bar A_k)`$.
 - **Closest to the start.** $x^{(m)} = \sum_k B_k^\dagger g_k$ is a sum of vectors in $\mathcal R(B_k^\top)$. Each of these is orthogonal to $\mathcal N(B_k) \supseteq \mathcal N(\bar A_m)$, so $x^{(m)} \perp \mathcal N(\bar A_m)$. Since $S_m = x^{(m)} + \mathcal N(\bar A_m)$, $x^{(m)}$ is the point of $S_m$ closest to $0$. $\square$
 
 Two consequences are used below:
@@ -82,15 +82,15 @@ Order the rows by level, level 1 first. Rows inside a level may be reordered fre
 
 1. **Start the level.** For each row $l$ of the level, project it on every direction found so far: $\kappa_{lj} = a_l q_j^\top$ and residual $c_l = a_l - \sum_j \kappa_{lj} q_j$.
 2. **Pivot.** Take next the remaining row $i$ of the level with the largest $\lVert c_i \rVert$.
-3. **Second pass.** If the first pass cancelled most of the row, $\lVert c_i \rVert^2 < \tfrac12 \lVert a_i \rVert^2$, then for every direction found so far $\kappa_{ij} \leftarrow \kappa_{ij} + c_i q_j^\top$ and $c_i \leftarrow c_i - (c_i q_j^\top)\, q_j$. This keeps $Q$ orthonormal to working precision (§15).
+3. **Second pass.** If the first pass cancelled most of the row, $\lVert c_i \rVert^2 < \tfrac12 \lVert a_i \rVert^2$, then for every direction found so far $\kappa_{ij} \leftarrow \kappa_{ij} + c_i q_j^\top$ and $`c_i \leftarrow c_i - (c_i q_j^\top)\, q_j`$. This keeps $Q$ orthonormal to working precision (§15).
 4. **Decide the rank.** If $\lVert c_i \rVert > \epsilon$, row $i$ is independent: $\kappa_{ii} = \lVert c_i \rVert$ and $q_i = c_i / \kappa_{ii}$. Otherwise row $i$ is dependent: $\kappa_{ii} = 0$ and $q_i = 0$.
 5. **Update the level.** If $q_i \neq 0$, then for every remaining row $l$ of the level, $\kappa_{li} = c_l q_i^\top$ and $c_l \leftarrow c_l - \kappa_{li} q_i$. Go back to step 2 until the level is done.
 
 Since $a_i = \sum_{j \le i} \kappa_{ij} q_j$ by construction,
 
-$$
+```math
 \bar A = K Q, \qquad K \ \text{lower triangular}, \qquad q_i q_j^\top = \begin{cases} 1 & i = j \in \mathcal J \\ 0 & \text{otherwise} \end{cases} \tag{4}
-$$
+```
 
 A dependent row $i$ has a zero row $q_i$, hence a zero column $K[:, i]$, and only its independent columns are stored.
 
@@ -104,12 +104,12 @@ The pivot search keeps the residual norms of the level and downdates them, $\lVe
 ### 4. What the factors contain
 
 **Lemma 1.** For every $k$, the rows of $\hat Q_1, \dots, \hat Q_k$ are an orthonormal basis of $\mathcal R(\bar A_k^\top)$, and $P_k = I - \sum_{j \le k} \hat Q_j^\top \hat Q_j$.
-*Proof.* Gram–Schmidt keeps $\mathrm{span}\{q_j : j \le i\} = \mathrm{span}\{a_j : j \le i\}$; the zero rows add nothing. $\square$
+*Proof.* Gram–Schmidt keeps $`\mathrm{span}\{q_j : j \le i\} = \mathrm{span}\{a_j : j \le i\}`$; the zero rows add nothing. $\square$
 
 **Lemma 2.** $B_k = A_k P_{k-1} = F_k \hat Q_k$, and $F_k$ has full column rank $r_k$.
 *Proof.* $A_k = \sum_{j \le k} K_{kj} \hat Q_j$, $\hat Q_j P_{k-1} = 0$ for $j < k$, and $\hat Q_k P_{k-1} = \hat Q_k$ (Lemma 1). The rows $\mathcal J_k$ of $F_k$ form a lower triangular $r_k \times r_k$ matrix with diagonal $\kappa_{ii} > 0$. $\square$
 
-So the level-$k$ block of $K$ is the level's projected rows written in a basis that all levels share, and $\mathrm{rank}\, B_k = r_k$. The null-space basis $Z_k$ of the classical formulation is any orthonormal basis of the complement of $\hat Q_1, \dots, \hat Q_k$; it is never needed. $\bar A \hat Q^\top = K[:, \mathcal J]$ is block lower triangular with full-column-rank diagonal blocks.
+So the level-$k$ block of $K$ is the level's projected rows written in a basis that all levels share, and $`\mathrm{rank}\, B_k = r_k`$. The null-space basis $Z_k$ of the classical formulation is any orthonormal basis of the complement of $\hat Q_1, \dots, \hat Q_k$; it is never needed. $\bar A \hat Q^\top = K[:, \mathcal J]$ is block lower triangular with full-column-rank diagonal blocks.
 
 **Gram form.** $G := \bar A \bar A^\top = K K^\top$, and the Schur complement of $G$ after the levels before $k$ is $F_k F_k^\top = B_k B_k^\top$. With $K = L D^{1/2}$, this is the LDL factorization of DAQP's $M = A_W H^{-1} A_W^\top$ (with $H = I$), taken in priority order. §16 explains why $G$ itself should not be formed.
 
@@ -117,33 +117,33 @@ So the level-$k$ block of $K$ is the level's projected rows written in a basis t
 
 By Lemma 2, $B_k = F_k \hat Q_k$ with $F_k$ of full column rank and $\hat Q_k$ of full row rank, so $B_k^\dagger = \hat Q_k^\dagger F_k^\dagger = \hat Q_k^\top F_k^\dagger$. Write $x^{(k)} = \sum_{j \le k} \hat Q_j^\top y_j$. Since $\hat Q_j \hat Q_l^\top = \delta_{jl} I$ and $A_k = \sum_{j \le k} K_{kj} \hat Q_j$, (3) becomes
 
-$$
+```math
 g_k = b_k - \sum_{j<k} K_{kj}\, y_j, \qquad y_k = F_k^\dagger g_k, \qquad x = \hat Q^\top y \tag{5}
-$$
+```
 
 Here $y$ stacks all $y_k$ ($r$ entries). Rows of later levels do not change $A_k x$, because $A_k \hat Q_j^\top = 0$ for $j > k$. Hence the residual of level $k$ in the final solution is exactly the residual of its own least-squares problem:
 
-$$
+```math
 \rho_k := A_k x - b_k = F_k y_k - g_k \tag{6}
-$$
+```
 
 **Computing $y_k = F_k^\dagger g_k$.** Split level $k$ into its independent and dependent rows:
 
-$$
+```math
 F_k = \begin{bmatrix} K_k^a \\ K_k^b \end{bmatrix}, \quad g_k = \begin{bmatrix} g_k^a \\ g_k^b \end{bmatrix}, \qquad K_k^a \in \mathbb R^{r_k \times r_k} \ \text{lower triangular}, \quad K_k^b \in \mathbb R^{s_k \times r_k}
-$$
+```
 
 - **No dependent row ($s_k = 0$):** $y_k = (K_k^a)^{-1} g_k$ by forward substitution, and $\rho_k = 0$.
 - **No independent row ($r_k = 0$):** $y_k$ is empty and $\rho_k = -g_k$.
-- **Otherwise the level conflicts:** least squares on $F_k$. Take its Householder QR, $F_k = H_k \begin{bmatrix} R_k \\ 0 \end{bmatrix}$ with $H_k$ orthogonal and $R_k$ upper triangular ($r_k \times r_k$), and $c := H_k^\top g_k = \begin{bmatrix} c^a \\ c^b \end{bmatrix}$:
+- **Otherwise the level conflicts:** least squares on $F_k$. Take its Householder QR, $`F_k = H_k \begin{bmatrix} R_k \\ 0 \end{bmatrix}`$ with $H_k$ orthogonal and $R_k$ upper triangular ($r_k \times r_k$), and $`c := H_k^\top g_k = \begin{bmatrix} c^a \\ c^b \end{bmatrix}`$:
 
-$$
+```math
 y_k = R_k^{-1} c^a \tag{7}
-$$
+```
 
-$$
+```math
 \rho_k = F_k y_k - g_k = H_k \begin{bmatrix} 0 \\ -c^b \end{bmatrix} \tag{8}
-$$
+```
 
 The normal equations of this problem, or the equivalent small system $(I + E_k E_k^\top) w = g^b - E_k g^a$ with $E_k = K_k^b (K_k^a)^{-1}$, would square the conditioning of the level: an ill-conditioned level then loses half of its digits. hlq computes the QR in place, in the diagonal block of the level of a workspace (`detail::householder_qr`), and §6 reuses it.
 
@@ -155,21 +155,21 @@ $y_k$ depends only on the levels up to $k$. After an update (§12) of a row of l
 
 The inequality case (Part II) needs the multipliers of the higher levels' rows in the subproblem of level $h$:
 
-$$
+```math
 \min_x \tfrac12 \lVert A_h x - b_h \rVert^2 \quad \text{s.t.} \quad \bar A_{h-1} x = \bar A_{h-1} x^{(h-1)} \tag{9}
-$$
+```
 
 With $\lambda_h := \rho_h$, stationarity of its Lagrangian $\tfrac12 \lVert A_h x - b_h \rVert^2 + \sum_{k<h} \lambda_k^\top (A_k x - A_k x^{(h-1)})$ reads
 
-$$
+```math
 \sum_{k \le h} A_k^\top \lambda_k = 0 \tag{10}
-$$
+```
 
 The $\lambda_k$ are not unique when rows are dependent. hlq picks them level by level, from $k = h-1$ down to $1$. Each $\lambda_k$ is the minimum-norm vector such that whatever remains can be absorbed by the levels above $k$:
 
-$$
+```math
 \tau_{k+1} := \sum_{j=k+1}^{h} A_j^\top \lambda_j, \qquad B_k^\top \lambda_k = -P_{k-1} \tau_{k+1}, \qquad \lambda_k = -(B_k^\top)^\dagger P_{k-1} \tau_{k+1} \tag{11}
-$$
+```
 
 **Solvability.** By induction, $\tau_{k+1} \in \mathcal R(\bar A_k^\top)$:
 - For $k = h-1$, the normal equations of level $h$ give $B_h^\top \rho_h = 0$, i.e. $P_{h-1} A_h^\top \lambda_h = 0$.
@@ -182,15 +182,15 @@ $$
 
 Hence:
 
-$$
+```math
 \theta_j \leftarrow K_{hj}^\top \rho_h \ (j < h); \quad \text{for } k = h-1, \dots, 1: \quad F_k^\top \lambda_k = -\theta_k,\ \lambda_k \in \mathcal R(F_k); \quad \theta_j \leftarrow \theta_j + K_{kj}^\top \lambda_k \ (j < k) \tag{12}
-$$
+```
 
-**Solving $F_k^\top \lambda_k = -\theta_k$ with minimum norm.** With the QR of §5, $F_k^\top = \begin{bmatrix} R_k^\top & 0 \end{bmatrix} H_k^\top$, so
+**Solving $F_k^\top \lambda_k = -\theta_k$ with minimum norm.** With the QR of §5, $`F_k^\top = \begin{bmatrix} R_k^\top & 0 \end{bmatrix} H_k^\top`$, so
 
-$$
+```math
 \lambda_k = H_k \begin{bmatrix} -R_k^{-\top} \theta_k \\ 0 \end{bmatrix} \tag{13}
-$$
+```
 
 which lies in $\mathcal R(F_k)$, spanned by the first $r_k$ columns of $H_k$. When $s_k = 0$, $\lambda_k = -(K_k^a)^{-\top} \theta_k$.
 
@@ -215,22 +215,22 @@ $x \in \mathbb R^3$, three levels:
 
 In factor order $(a_1, a_2, a_3, a_5, a_4)$, with columns $(q_1, q_2, q_5)$:
 
-$$
+```math
 K[:, \mathcal J] = \begin{bmatrix} \sqrt2 & 0 & 0 \\ 1/\sqrt2 & 1/\sqrt2 & 0 \\ 1/\sqrt2 & -1/\sqrt2 & 0 \\ 0 & 0 & 1 \\ 1/\sqrt2 & 1/\sqrt2 & 0 \end{bmatrix}
-$$
+```
 
 **Forward substitution (5)–(8).**
 - Level 1: $y_1 = 2/\sqrt2 = \sqrt2$.
-- Level 2: $g_2 = (2,1) - (1/\sqrt2)\sqrt2\,(1,1) = (1, 0)$, and $F_2 = (1/\sqrt2, -1/\sqrt2)^\top$, so the least squares of (7) gives $y_2 = F_2^\top g_2 / \lVert F_2 \rVert^2 = \tfrac1{\sqrt2}$. The residuals are $\rho_2 = (-\tfrac12, -\tfrac12)$: the conflict is split evenly.
+- Level 2: $`g_2 = (2,1) - (1/\sqrt2)\sqrt2\,(1,1) = (1, 0)`$, and $F_2 = (1/\sqrt2, -1/\sqrt2)^\top$, so the least squares of (7) gives $y_2 = F_2^\top g_2 / \lVert F_2 \rVert^2 = \tfrac1{\sqrt2}$. The residuals are $\rho_2 = (-\tfrac12, -\tfrac12)$: the conflict is split evenly.
 - Level 3: $g_3 = (3, 0 - (1 + \tfrac12)) = (3, -\tfrac32)$ and $F_3 = (1, 0)^\top$, so $y_3 = 3$ and $\rho_3 = (0, \tfrac32)$.
-- Result: $x = \sqrt2\, q_1 + \tfrac1{\sqrt2} q_2 + 3 q_5 = (\tfrac32, \tfrac12, 3)$.
+- Result: $`x = \sqrt2\, q_1 + \tfrac1{\sqrt2} q_2 + 3 q_5 = (\tfrac32, \tfrac12, 3)`$.
 
 **Backward substitution (12)–(13), for $h = 3$.**
 - $\theta_1 = \theta_2 = (1/\sqrt2)\cdot\tfrac32 = \tfrac3{2\sqrt2}$.
 - Level 2: $\lambda_2$ is the minimum-norm solution of $F_2^\top \lambda_2 = -\theta_2$, $\lambda_2 = -F_2 \theta_2 / \lVert F_2 \rVert^2 = (-\tfrac34, \tfrac34)$.
 - Then $\theta_1 \leftarrow \theta_1 + \tfrac1{\sqrt2}(-\tfrac34 + \tfrac34) = \tfrac3{2\sqrt2}$.
 - Level 1: $\lambda_1 = -\tfrac1{\sqrt2}\cdot\tfrac3{2\sqrt2} = -\tfrac34$.
-- Check (10): $-\tfrac34 a_1 - \tfrac34 a_2 + \tfrac34 a_3 + \tfrac32 a_4 + 0\, a_5 = 0$.
+- Check (10): $`-\tfrac34 a_1 - \tfrac34 a_2 + \tfrac34 a_3 + \tfrac32 a_4 + 0\, a_5 = 0`$.
 
 
 ## Part II — Inequalities
@@ -239,13 +239,13 @@ $$
 
 Each row has bounds $l_i \le a_i x \le u_i$ (an equality when $l_i = u_i$). Level $k$ minimizes its violation
 
-$$
+```math
 f_k(x) = \tfrac12 \sum_{i \in \text{level } k} \mathrm{dist}\big(a_i x, [l_i, u_i]\big)^2 \tag{14}
-$$
+```
 
 over the optimal set of the levels above it, as in (1).
 
-**Working set.** $W$ is a set of rows, each with a side $\sigma_i \in \{+1, -1\}$ (upper or lower bound) and target $\beta_i = u_i$ or $l_i$. Equality rows are always in $W$. For fixed $W$, the problem "make the rows of $W$ equal to their targets, level by level" is Part I. Write $\bar x(W)$ for its solution.
+**Working set.** $W$ is a set of rows, each with a side $`\sigma_i \in \{+1, -1\}`$ (upper or lower bound) and target $\beta_i = u_i$ or $l_i$. Equality rows are always in $W$. For fixed $W$, the problem "make the rows of $W$ equal to their targets, level by level" is Part I. Write $\bar x(W)$ for its solution.
 
 **Locked rows.** These are rows of $W$ that may no longer be removed. Equality rows are locked from the start.
 
@@ -257,9 +257,9 @@ $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the curr
 1. **For $h = 1, \dots, m + 1$:** phase $m + 1$ is the final choice among the optima (§6).
    1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
-      $$
+      ```math
       t_i = \mathrm{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}
-      $$
+      ```
       The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2.
    3. **Drop test.** Set $\hat x \leftarrow \bar x$ and compute the multipliers of subproblem $h$ (§6). For a level's own rows these are its residuals, $\lambda_i = \rho_i$. Let $i$ be the unlocked row of $W$ in levels $\le h$ that maximizes $-\sigma_i \lambda_i$. If $-\sigma_i \lambda_i > z_h$, remove it (§12) and go back to step 2.
    4. **Lock.** Lock every row of $W$ in levels $\le h$ with $\sigma_i \lambda_i > z_h$, then go to the next $h$.
@@ -294,9 +294,9 @@ The optimum is $(0, 4)$, and all three levels are satisfied there. Start warm, w
 
 A rule that drops a row only when its own level's residual has the wrong sign would stay at $(1, 3)$: that residual is zero here. The multiplier that releases $a_1$ belongs to the subproblem of level 3.
 
-**The removal as an update (§11).** Removing $a_1$ leaves the tail $a_2, a_3$ with coefficients $(1, 1)$ and $(0, 1)$ on $(e_1, e_2)$. One rotation of the directions, $d_1 = (e_1 + e_2)/\sqrt2$ and $d_2 = (-e_1 + e_2)/\sqrt2$, makes it triangular again: $a_2 = \sqrt2\, d_1$ and $a_3 = \tfrac1{\sqrt2} d_1 + \tfrac1{\sqrt2} d_2$.
+**The removal as an update (§11).** Removing $a_1$ leaves the tail $a_2, a_3$ with coefficients $(1, 1)$ and $(0, 1)$ on $(e_1, e_2)$. One rotation of the directions, $d_1 = (e_1 + e_2)/\sqrt2$ and $d_2 = (-e_1 + e_2)/\sqrt2$, makes it triangular again: $`a_2 = \sqrt2\, d_1`$ and $a_3 = \tfrac1{\sqrt2} d_1 + \tfrac1{\sqrt2} d_2$.
 - Row $a_3$ is now independent: the direction freed at level 1 passes through level 2 to level 3.
-- In Gram form, the tail's Gram matrix $\begin{bmatrix} 1 & 1 \\ 1 & 1 \end{bmatrix}$ gains $k k^\top$ with $k = (1, 0)$, its coefficients on the removed direction: $\begin{bmatrix} 2 & 1 \\ 1 & 1 \end{bmatrix}$.
+- In Gram form, the tail's Gram matrix $`\begin{bmatrix} 1 & 1 \\ 1 & 1 \end{bmatrix}`$ gains $k k^\top$ with $k = (1, 0)$, its coefficients on the removed direction: $`\begin{bmatrix} 2 & 1 \\ 1 & 1 \end{bmatrix}`$.
 - Then $y = (2\sqrt2, 2\sqrt2)$ and $\bar x = (0, 4)$.
 
 
@@ -306,13 +306,13 @@ A rule that drops a row only when its own level's residual has the wrong sign wo
 
 Let row $p$ change, and split the rows into the **lead** (before $p$) and the **tail** (after $p$).
 - **The lead does not change.** Gram–Schmidt of a row only sees the rows before it.
-- **The tail changes only through its coefficients on the direction of row $p$.** Let $C_t$ be the tail's residuals after the lead and row $p$, $S_t := C_t C_t^\top$, and $k := $ the tail's coefficients on $q_p$.
+- **The tail changes only through its coefficients on the direction of row $p$.** Let $C_t$ be the tail's residuals after the lead and row $p$, $S_t := C_t C_t^\top$, and $k$ the tail's coefficients on $q_p$.
 
-$$
+```math
 \text{removal:}\ \ S_t' = S_t + k k^\top, \qquad \text{insertion:}\ \ S_t' = S_t - k k^\top \tag{16}
-$$
+```
 
-Removal, because the tail's residuals gain back $k\, q_p$, and $q_p$ is orthogonal to the rows of $C_t$. Insertion, because they lose it: $C_t' = C_t - k q_p^\top$ with $k = C_t q_p^\top$.
+Removal, because the tail's residuals gain back $`k\, q_p`$, and $q_p$ is orthogonal to the rows of $C_t$. Insertion, because they lose it: $C_t' = C_t - k q_p^\top$ with $k = C_t q_p^\top$.
 
 Bookkeeping of the rank:
 - **$k = 0$ or $q_p = 0$:** the tail does not change.
@@ -334,7 +334,7 @@ Both updates express the rows after the change, the **tail**, in coordinates: on
 2. **Compress** the row's entries on coordinates `next`, ..., last nonzero into coordinate `next`: Givens rotations of adjacent coordinates, from the right, each applied to the columns of $C$ (for the rows from this one on) and to the rows of $B$.
 3. **Decide.** If the entry on `next` exceeds $\epsilon_k$ in magnitude, the row is independent: it takes coordinate `next` (sign made positive), its direction is that row of $B$, and the rows below get their coefficients on it from that column of $C$. Otherwise it is dependent, and what it has left is dropped.
 
-The structure keeps this cheap: after a removal each row has one coordinate to absorb (one rotation); after an insertion the new row needs up to $\dim B - 1$ rotations and every later row one or two. Each rotation costs $O(t + n)$ for $t$ tail rows, so an update costs $O(n\, r_{\text{lead}})$ for the projection plus $O(\dim B\,(t + n))$ for the rotations. Coordinates that no row takes are directions the tail no longer needs. A tail row whose new entry exceeds $\epsilon$ becomes independent; when an insertion takes a direction a lower level was using, the step-3 test decides which tail row loses it.
+The structure keeps this cheap: after a removal each row has one coordinate to absorb (one rotation); after an insertion the new row needs up to $\dim B - 1$ rotations and every later row one or two. Each rotation costs $O(t + n)$ for $t$ tail rows, so an update costs $`O(n\, r_{\text{lead}})`$ for the projection plus $`O(\dim B\,(t + n))`$ for the rotations. Coordinates that no row takes are directions the tail no longer needs. A tail row whose new entry exceeds $\epsilon$ becomes independent; when an insertion takes a direction a lower level was using, the step-3 test decides which tail row loses it.
 
 **Pivoting.** Rows keep their order inside a level except as step 1 reorders the tail; a full factorization happens at every solve (step 0 of §9), so any drift in the pivot order is limited to one solve.
 
@@ -347,7 +347,7 @@ For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with 
 | operation | cost |
 |---|---|
 | factorization from scratch (§3) | $O(M n r)$ |
-| insertion or removal (§12) | $O(n\, r + \dim B\,(t + n))$ |
+| insertion or removal (§12) | $`O(n\, r + \dim B\,(t + n))`$ |
 | solution of the working set (§5) | $O(M r + n r)$, plus a QR of each conflicting level, from the level of the change on |
 | multipliers of a subproblem (§6) | $O(M r)$, reusing those QRs |
 | ratio test (15) | $O(m n)$ over the inactive rows of the levels involved |
