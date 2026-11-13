@@ -1,5 +1,6 @@
 // The optimality certificate on random problems: cold, warm, perturbed and with a metric.
 
+#include <limits>
 #include <random>
 
 #include <gtest/gtest.h>
@@ -129,4 +130,30 @@ TEST(RandomProblems, CertificateRejectsPerturbedSolutions) {
         rejected += hlq::test::certify(p, moved).optimal ? 0 : 1;
     }
     EXPECT_EQ(rejected, 500);
+}
+
+TEST(RandomProblems, BoundsOnVariables) {
+    // Rows with one nonzero, scaled by any coefficient, at any level: evaluated from that entry.
+    for (unsigned seed = 0; seed < 500; ++seed) {
+        hlq::test::Problem p = hlq::test::make_problem(seed % 2 == 0 ? Family::Random : Family::Large, seed);
+        std::mt19937 gen(seed + 4242u);
+        std::uniform_int_distribution<Eigen::Index> column(0, p.cols() - 1);
+        std::uniform_real_distribution<double> coefficient(-3, 3), bound(-2, 2), coin(0, 1);
+        for (Eigen::Index i = 0; i < p.rows() - p.cols(); ++i) {
+            if (coin(gen) < 0.4) {
+                const double c = coefficient(gen);
+                p.matrix.row(i).setZero();
+                p.matrix(i, column(gen)) = std::abs(c) < 0.1 ? 1 : c;
+                const double a = bound(gen), b = bound(gen);
+                p.lower(i) = coin(gen) < 0.2 ? -std::numeric_limits<double>::infinity() : std::min(a, b);
+                p.upper(i) = std::max(a, b);
+            }
+        }
+        hlq::Solver<> solver(p.rows(), p.cols());
+        ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
+        ASSERT_EQ(solver.solve(), hlq::Status::Solved) << "seed " << seed;
+        const auto cert = hlq::test::certify(p, hlq::as_eigen(solver.solution()));
+        EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
+                                  << cert.residual;
+    }
 }

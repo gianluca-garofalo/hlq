@@ -91,7 +91,8 @@ public:
           step_(cols),
           primal_(cols),
           point_(cols),
-          solution_(cols) {
+          solution_(cols),
+          row_kinds_(2 * max_rows) {
         HLQ_ASSERT(max_rows >= 0 && cols >= 0);
         HLQ_ASSERT(MaxRows == dynamic || max_rows <= MaxRows);
         HLQ_ASSERT(MaxCols == dynamic || cols <= MaxCols);
@@ -686,6 +687,16 @@ private:
                     detail::multiply_transposed_add(Scalar(1), metric(), matrix_.row(i), scaled_.row(i));
                 }
             }
+            // A row with one nonzero, a bound on that variable, is evaluated from it.
+            for (Index i = 0; i < rows_; ++i) {
+                Index column = -1;
+                for (Index j = 0; j < cols_; ++j) {
+                    if (matrix_(i, j) != Scalar(0)) {
+                        column = column == -1 ? j : -2;
+                    }
+                }
+                row_kinds_(i) = column >= 0 ? column : -1;
+            }
             // Absolute: rounding noise scales with the longest row of a level, not with what is left of a
             // row.
             const detail::MatrixRef<const Scalar> rows = factored_rows();
@@ -754,7 +765,7 @@ private:
     Index activate_violated(Index h) noexcept {
         const Index begin = h == 0 ? 0 : level_ends_(h - 1);
         const Index end = level_ends_(h);
-        detail::multiply(matrix_.block(begin, 0, end - begin, cols_), point_.data(), values_.data() + begin);
+        evaluate(begin, end, point_.data());
         Index count = 0;
         for (Index i = begin; i < end && changes_ < settings_.max_changes; ++i) {
             if (active_(i)) {
@@ -777,7 +788,7 @@ private:
         Scalar step = 1;
         row = -1;
         const Index end = level_ends_(std::min(h, searched_ - 1));
-        detail::multiply(matrix_.block(0, 0, end, cols_), primal_.data(), values_.data());
+        evaluate(0, end, primal_.data());
         for (Index i = 0; i < end; ++i) {
             if (active_(i)) {
                 continue;
@@ -785,7 +796,9 @@ private:
             const bool above = values_(i) - upper_(i) > settings_.feasibility_tolerance;
             if (above || lower_(i) - values_(i) > settings_.feasibility_tolerance) {
                 // The iterate satisfies the bound, so the denominator is nonzero.
-                const Scalar from = detail::dot(matrix_.row(i), point_.data(), cols_);
+                const Index j = row_kinds_(i);
+                const Scalar from =
+                    j >= 0 ? matrix_(i, j) * point_(j) : detail::dot(matrix_.row(i), point_.data(), cols_);
                 const Scalar bound = above ? upper_(i) : lower_(i);
                 const Scalar t = std::clamp((bound - from) / (values_(i) - from), Scalar(0), Scalar(1));
                 if (row < 0 || t < step) {
@@ -796,6 +809,25 @@ private:
             }
         }
         return step;
+    }
+
+    /// values_(i) = A_i x for the inactive rows of [begin, end): a row with one nonzero (a bound on a
+    /// variable) from that entry, the others four at a time.
+    void evaluate(Index begin, Index end, const Scalar* x) noexcept {
+        Index* dense = row_kinds_.data() + max_rows_;
+        Index count = 0;
+        for (Index i = begin; i < end; ++i) {
+            if (active_(i)) {
+                continue;
+            }
+            const Index j = row_kinds_(i);
+            if (j >= 0) {
+                values_(i) = matrix_(i, j) * x[j];
+            } else {
+                dense[count++] = i;
+            }
+        }
+        detail::multiply_rows(matrix_.block(0, 0, rows_, cols_), dense, count, x, values_.data());
     }
 
     [[nodiscard]] Index level_of(Index row) const noexcept {
@@ -855,6 +887,9 @@ private:
     // QR of its rows, transposed (the next columns); row cols the reflectors' tau, and row cols + 1 its
     // reference.
     detail::Matrix<Scalar, detail::grow(MaxCols, 2), detail::sum(MaxCols, MaxRows)> fold_store_;
+    // The column of the one nonzero of each row, or -1, then workspace for the list of rows evaluated
+    // together.
+    detail::Vector<Index, detail::sum(MaxRows, MaxRows)> row_kinds_;
 };
 
 }  // namespace hlq
