@@ -141,15 +141,15 @@ A final regularization level such as $x = 0$ is not needed: hlq's own choice amo
 | random with an ill-conditioned level | 32 / 0 | 8 / 0 | 0 / 0 |
 | degenerate with an ill-conditioned level | 5 / 0 | 0 / 0 | |
 
-Cold solves from data to solution (setup included), median of 5 runs, on a 2.1 GHz x86-64 VM:
+Cold solves from data to solution (setup included), median of 5 runs, on one core of a 2.1 GHz x86-64 VM:
 
 | Family | hlq | hlq without the final $x = 0$ level | HierarchicalQP | LexLS | DAQP |
 |---|---|---|---|---|---|
-| random (2–8 variables) | 18 µs | 12 µs | 21 µs | 23 µs | 6 µs |
-| degenerate (3 variables) | 6 µs | | 7 µs | 8 µs | 3 µs |
-| large (20–40 variables) | 196 µs | 107 µs | 765 µs | 703 µs | 56 µs |
+| random (2–8 variables) | 12 µs | 8.5 µs | 17 µs | 21 µs | 5.1 µs |
+| degenerate (3 variables) | 4.6 µs | | 5.6 µs | 7.3 µs | 2.9 µs |
+| large (20–40 variables) | 167 µs | 75 µs | 643 µs | 607 µs | 53 µs |
 
-DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and seven times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
+DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and eight times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
 
 CI reruns both on every pull request (see the Comparisons workflow's summary). Known limits are listed at the end of [docs/algorithm.md](docs/algorithm.md).
 

@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <type_traits>
@@ -16,7 +17,65 @@
 
 #include <hlq/types.hpp>
 
+/// GCC and Clang vector types make the kernels use SIMD instructions without reassociation flags. Define
+/// HLQ_NO_VECTOR_EXTENSIONS to use plain loops instead, as other compilers do.
+#if !defined(HLQ_NO_VECTOR_EXTENSIONS) && (defined(__GNUC__) || defined(__clang__))
+#define HLQ_VECTOR_EXTENSIONS 1
+#else
+#define HLQ_VECTOR_EXTENSIONS 0
+#endif
+
 namespace hlq::detail {
+
+#if HLQ_VECTOR_EXTENSIONS
+/// Bytes of a SIMD register of the target.
+#if defined(__AVX512F__)
+inline constexpr std::size_t pack_bytes = 64;
+#elif defined(__AVX__)
+inline constexpr std::size_t pack_bytes = 32;
+#else
+inline constexpr std::size_t pack_bytes = 16;
+#endif
+
+template <typename T>
+struct PackOf;
+template <>
+struct PackOf<float> {
+    typedef float type __attribute__((vector_size(pack_bytes)));
+};
+template <>
+struct PackOf<double> {
+    typedef double type __attribute__((vector_size(pack_bytes)));
+};
+
+/// A SIMD register of scalars, loaded and stored without alignment requirements.
+template <typename T>
+struct Simd {
+    using Pack = typename PackOf<T>::type;
+    static constexpr Index width = static_cast<Index>(pack_bytes / sizeof(T));
+
+    static Pack load(const T* p) noexcept {
+        Pack v;
+        std::memcpy(&v, p, sizeof v);
+        return v;
+    }
+    static void store(T* p, Pack v) noexcept { std::memcpy(p, &v, sizeof v); }
+    static Pack splat(T x) noexcept {
+        Pack v;
+        for (Index k = 0; k < width; ++k) {
+            v[k] = x;
+        }
+        return v;
+    }
+    static T sum(Pack v) noexcept {
+        T s = 0;
+        for (Index k = 0; k < width; ++k) {
+            s += v[k];
+        }
+        return s;
+    }
+};
+#endif
 
 /// A compile-time capacity plus `extra`, or `dynamic`.
 constexpr int grow(int capacity, int extra) noexcept {
@@ -190,7 +249,24 @@ template <typename T>
 [[nodiscard]] T dot(const T* a, const T* b, Index n) noexcept {
     Index i = 0;
     T s = 0;
-    // Four partial sums pipeline (and vectorize) without reassociation by the compiler.
+#if HLQ_VECTOR_EXTENSIONS
+    using S = Simd<T>;
+    constexpr Index w = S::width;
+    if (n >= w) {
+        typename S::Pack s0{};
+        typename S::Pack s1{};
+        for (; i + 2 * w <= n; i += 2 * w) {
+            s0 += S::load(a + i) * S::load(b + i);
+            s1 += S::load(a + i + w) * S::load(b + i + w);
+        }
+        if (i + w <= n) {
+            s0 += S::load(a + i) * S::load(b + i);
+            i += w;
+        }
+        s = S::sum(s0 + s1);
+    }
+#else
+    // Four partial sums pipeline without reassociation by the compiler.
     T s1 = 0;
     T s2 = 0;
     T s3 = 0;
@@ -201,6 +277,7 @@ template <typename T>
         s3 += a[i + 3] * b[i + 3];
     }
     s = (s + s1) + (s2 + s3);
+#endif
     for (; i < n; ++i) {
         s += a[i] * b[i];
     }
@@ -216,6 +293,13 @@ template <typename T>
 template <typename T>
 void axpy(T alpha, const T* x, T* y, Index n) noexcept {
     Index i = 0;
+#if HLQ_VECTOR_EXTENSIONS
+    using S = Simd<T>;
+    const auto a = S::splat(alpha);
+    for (; i + S::width <= n; i += S::width) {
+        S::store(y + i, S::load(y + i) + a * S::load(x + i));
+    }
+#endif
     for (; i < n; ++i) {
         y[i] += alpha * x[i];
     }
@@ -257,6 +341,43 @@ void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
         }
     };
     Index i = 0;
+#if HLQ_VECTOR_EXTENSIONS
+    using S = Simd<T>;
+    constexpr Index w = S::width;
+    const Index n = a.cols;
+    const Index packed = n - n % w;
+    for (; i + 4 <= a.rows; i += 4) {
+        const T* r0 = a.row(i);
+        const T* r1 = a.row(i + 1);
+        const T* r2 = a.row(i + 2);
+        const T* r3 = a.row(i + 3);
+        typename S::Pack s0{};
+        typename S::Pack s1{};
+        typename S::Pack s2{};
+        typename S::Pack s3{};
+        for (Index j = 0; j < packed; j += w) {
+            const auto v = S::load(x + j);
+            s0 += S::load(r0 + j) * v;
+            s1 += S::load(r1 + j) * v;
+            s2 += S::load(r2 + j) * v;
+            s3 += S::load(r3 + j) * v;
+        }
+        T t0 = S::sum(s0);
+        T t1 = S::sum(s1);
+        T t2 = S::sum(s2);
+        T t3 = S::sum(s3);
+        for (Index j = packed; j < n; ++j) {
+            t0 += r0[j] * x[j];
+            t1 += r1[j] * x[j];
+            t2 += r2[j] * x[j];
+            t3 += r3[j] * x[j];
+        }
+        put(i, t0);
+        put(i + 1, t1);
+        put(i + 2, t2);
+        put(i + 3, t3);
+    }
+#endif
     for (; i < a.rows; ++i) {
         put(i, dot(a.row(i), x, a.cols));
     }
@@ -266,6 +387,34 @@ void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
 template <typename T>
 void multiply_transposed_add(T alpha, ConstRef<T> a, const T* x, T* y) noexcept {
     Index i = 0;
+#if HLQ_VECTOR_EXTENSIONS
+    using S = Simd<T>;
+    constexpr Index w = S::width;
+    const Index n = a.cols;
+    const Index packed = n - n % w;
+    for (; i + 4 <= a.rows; i += 4) {
+        const T* r0 = a.row(i);
+        const T* r1 = a.row(i + 1);
+        const T* r2 = a.row(i + 2);
+        const T* r3 = a.row(i + 3);
+        const T c0 = alpha * x[i];
+        const T c1 = alpha * x[i + 1];
+        const T c2 = alpha * x[i + 2];
+        const T c3 = alpha * x[i + 3];
+        const auto p0 = S::splat(c0);
+        const auto p1 = S::splat(c1);
+        const auto p2 = S::splat(c2);
+        const auto p3 = S::splat(c3);
+        for (Index j = 0; j < packed; j += w) {
+            S::store(y + j, S::load(y + j)
+                                + ((p0 * S::load(r0 + j) + p1 * S::load(r1 + j))
+                                   + (p2 * S::load(r2 + j) + p3 * S::load(r3 + j))));
+        }
+        for (Index j = packed; j < n; ++j) {
+            y[j] += (c0 * r0[j] + c1 * r1[j]) + (c2 * r2[j] + c3 * r3[j]);
+        }
+    }
+#endif
     for (; i < a.rows; ++i) {
         axpy(alpha * x[i], a.row(i), y, a.cols);
     }
@@ -315,6 +464,17 @@ template <typename T>
 template <typename T>
 void rotate(Rotation<T> g, T* x, T* y, Index n) noexcept {
     Index i = 0;
+#if HLQ_VECTOR_EXTENSIONS
+    using S = Simd<T>;
+    const auto c = S::splat(g.c);
+    const auto s = S::splat(g.s);
+    for (; i + S::width <= n; i += S::width) {
+        const auto a = S::load(x + i);
+        const auto b = S::load(y + i);
+        S::store(x + i, c * a + s * b);
+        S::store(y + i, c * b - s * a);
+    }
+#endif
     for (; i < n; ++i) {
         const T a = x[i];
         const T b = y[i];
