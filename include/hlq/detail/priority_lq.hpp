@@ -105,84 +105,115 @@ public:
     template <typename Rows, typename Active, typename Ends>
     void factor(const Rows& rows, const Active& active, const Ends& level_end, const LevelsVector& noise) {
         size_ = 0;
+        factored_ = 0;
         for (Index k = 0, i = 0; k < levels_; ++k) {
             begin_(k) = size_;
             for (; i < static_cast<Index>(level_end(k)); ++i) {
                 level_of_(i) = k;
                 position_(i) = -1;
-                if (active(i)) {
-                    place(size_++, i);
+            }
+        }
+        begin_(levels_) = 0;
+        for (Index k = 0, i = 0; k < levels_; ++k) {
+            append(rows, active, i, static_cast<Index>(level_end(k)), noise);
+            i = static_cast<Index>(level_end(k));
+        }
+    }
+
+    /// Number of levels in the factorization: the first ones; the active rows of the others are left out.
+    [[nodiscard]] Index factored() const noexcept { return factored_; }
+
+    /// Leaves the levels after `level` out of the factorization, at no cost; `append` brings them back.
+    void truncate(Index level) noexcept {
+        const Index end = begin_(level + 1);
+        for (Index p = end; p < size_; ++p) {
+            position_(row_(p)) = -1;
+        }
+        size_ = end;
+        for (Index k = level + 1; k < levels_; ++k) {
+            begin_(k + 1) = end;
+            rank_(k) = 0;
+        }
+        factored_ = level + 1;
+    }
+
+    /**
+     * Factors the active rows of the next level, problem rows `[first, last)`, after the levels in the
+     * factorization, by Gram-Schmidt with pivoting.
+     */
+    template <typename Rows, typename Active>
+    void append(const Rows& rows, const Active& active, Index first, Index last, const LevelsVector& noise) {
+        const Index k = factored_++;
+        const Index begin = size_;
+        begin_(k) = begin;
+        for (Index i = first; i < last; ++i) {
+            if (active(i)) {
+                place(size_++, i);
+            }
+        }
+        for (Index j = k + 1; j <= levels_; ++j) {
+            begin_(j) = size_;
+        }
+        const Index count = size_ - begin;
+        auto level = rows_.block(begin, 0, count, cols_);
+        for (Index p = begin; p < size_; ++p) {
+            level.row(p - begin) = rows.row(row_(p));
+        }
+        coefs_.block(begin, 0, count, size_).setZero();
+        entry_.segment(begin, count) = level.rowwise().squaredNorm();
+        if (count > 0) {
+            // First pass: coefficients on the directions of the levels above.
+            if (begin > 0) {
+                coefs_.block(begin, 0, count, begin).noalias() = level * basis_.topRows(begin).transpose();
+                level.noalias() -= coefs_.block(begin, 0, count, begin) * basis_.topRows(begin);
+            }
+            auto norms = norms_.head(count);
+            norms = level.rowwise().squaredNorm();
+            const Scalar exact = recompute_below() * norms.maxCoeff();
+
+            for (Index j = 0; j < count; ++j) {
+                const Index p = begin + j;
+                // Pivot on the largest residual of the level. Downdated norms lose their accuracy as the
+                // residuals vanish, so they are recomputed there.
+                Index best = 0;
+                if (norms.tail(count - j).maxCoeff(&best) < exact) {
+                    norms.tail(count - j) = level.bottomRows(count - j).rowwise().squaredNorm();
+                    norms.tail(count - j).maxCoeff(&best);
+                }
+                if (best > 0) {
+                    level.row(j).swap(level.row(j + best));
+                    coefs_.row(p).head(p).swap(coefs_.row(p + best).head(p));
+                    swap_positions(p, p + best);
+                    std::swap(norms(j), norms(j + best));
+                    std::swap(entry_(p), entry_(p + best));
+                }
+
+                // A second pass keeps Q orthonormal to working precision. It is only needed when the
+                // first one cancelled most of the row (Daniel, Gragg, Kaufman and Stewart, 1976).
+                if (p > 0 && level.row(j).squaredNorm() < Scalar(0.5) * entry_(p)) {
+                    scratch_.head(p).noalias() = basis_.topRows(p) * level.row(j).transpose();
+                    coefs_.row(p).head(p) += scratch_.head(p).transpose();
+                    level.row(j).noalias() -= scratch_.head(p).transpose() * basis_.topRows(p);
+                }
+
+                const Scalar norm = level.row(j).norm();
+                const Index rest = count - j - 1;
+                if (norm > noise(k)) {
+                    coefs_(p, p) = norm;
+                    basis_.row(p) = level.row(j) / norm;
+                    if (rest > 0) {
+                        coefs_.block(p + 1, p, rest, 1).noalias() =
+                            level.middleRows(j + 1, rest) * basis_.row(p).transpose();
+                        level.middleRows(j + 1, rest).noalias() -=
+                            coefs_.block(p + 1, p, rest, 1) * basis_.row(p);
+                        norms.tail(rest) -= coefs_.block(p + 1, p, rest, 1).cwiseAbs2();
+                    }
+                } else {
+                    basis_.row(p).setZero();
                 }
             }
         }
-        begin_(levels_) = size_;
-
-        auto res = rows_.topLeftCorner(size_, cols_);
-        for (Index p = 0; p < size_; ++p) {
-            res.row(p) = rows.row(row_(p));
-        }
-        coefs_.topLeftCorner(size_, size_).setZero();
-        entry_.head(size_) = res.rowwise().squaredNorm();
-
-        for (Index k = 0; k < levels_; ++k) {
-            const Index begin = begin_(k);
-            const Index count = begin_(k + 1) - begin;
-            if (count > 0) {
-                // First pass: coefficients on the directions of the levels above.
-                auto level = res.middleRows(begin, count);
-                if (begin > 0) {
-                    coefs_.block(begin, 0, count, begin).noalias() =
-                        level * basis_.topRows(begin).transpose();
-                    level.noalias() -= coefs_.block(begin, 0, count, begin) * basis_.topRows(begin);
-                }
-                auto norms = norms_.head(count);
-                norms = level.rowwise().squaredNorm();
-                const Scalar exact = recompute_below() * norms.maxCoeff();
-
-                for (Index j = 0; j < count; ++j) {
-                    const Index p = begin + j;
-                    // Pivot on the largest residual of the level. Downdated norms lose their accuracy as the
-                    // residuals vanish, so they are recomputed there.
-                    Index best = 0;
-                    if (norms.tail(count - j).maxCoeff(&best) < exact) {
-                        norms.tail(count - j) = level.bottomRows(count - j).rowwise().squaredNorm();
-                        norms.tail(count - j).maxCoeff(&best);
-                    }
-                    if (best > 0) {
-                        level.row(j).swap(level.row(j + best));
-                        coefs_.row(p).head(p).swap(coefs_.row(p + best).head(p));
-                        swap_positions(p, p + best);
-                        std::swap(norms(j), norms(j + best));
-                        std::swap(entry_(p), entry_(p + best));
-                    }
-
-                    // A second pass keeps Q orthonormal to working precision. It is only needed when the
-                    // first one cancelled most of the row (Daniel, Gragg, Kaufman and Stewart, 1976).
-                    if (p > 0 && level.row(j).squaredNorm() < Scalar(0.5) * entry_(p)) {
-                        scratch_.head(p).noalias() = basis_.topRows(p) * level.row(j).transpose();
-                        coefs_.row(p).head(p) += scratch_.head(p).transpose();
-                        level.row(j).noalias() -= scratch_.head(p).transpose() * basis_.topRows(p);
-                    }
-
-                    const Scalar norm = level.row(j).norm();
-                    const Index rest = count - j - 1;
-                    if (norm > noise(k)) {
-                        coefs_(p, p) = norm;
-                        basis_.row(p) = level.row(j) / norm;
-                        if (rest > 0) {
-                            coefs_.block(p + 1, p, rest, 1).noalias() =
-                                level.middleRows(j + 1, rest) * basis_.row(p).transpose();
-                            level.middleRows(j + 1, rest).noalias() -=
-                                coefs_.block(p + 1, p, rest, 1) * basis_.row(p);
-                            norms.tail(rest) -= coefs_.block(p + 1, p, rest, 1).cwiseAbs2();
-                        }
-                    } else {
-                        basis_.row(p).setZero();
-                    }
-                }
-            }
-            count_rank(k);
-        }
+        count_rank(k);
     }
 
     /**
@@ -505,6 +536,7 @@ private:
 
     Index cols_;
     Index levels_ = 0;
+    Index factored_ = 0;  // levels in the factorization
     Index size_ = 0;
     Positions row_;         // problem row of each position
     Positions position_;    // position of each problem row, or -1

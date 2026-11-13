@@ -227,6 +227,9 @@ TEST(Solver, StopsAtMaxChanges) {
     ASSERT_EQ(solver.set_problem(a, lower, upper, ends), Status::Ready);
     EXPECT_EQ(solver.solve(), Status::MaxChanges);
     EXPECT_TRUE(hlq::has_solution(solver.status()));
+    // The search stopped in the first level, which leaves the second out of the factorization until then.
+    EXPECT_EQ(solver.rank(0), 1);
+    EXPECT_EQ(solver.rank(1), 1);
     solver.settings().max_changes = 500;
     solver.reset();
     EXPECT_EQ(solver.solve(), Status::Solved);
