@@ -149,6 +149,8 @@ The normal equations of this problem, or the equivalent small system $(I + E_k E
 
 With a reference, $x = x^{(0)} + \hat Q^\top y$ (in the metric's coordinates, $x = x^{(0)} + U^{-1} \hat Q^\top y$).
 
+$y_k$ depends only on the levels up to $k$. After an update (§12) of a row of level $k$, the levels before $k$ keep their $y_j$, $\rho_j$ and QRs, and their parts $\hat Q_j^\top y_j$ of $x$; only levels $k$ and later are solved again.
+
 ### 6. Multipliers: block backward substitution
 
 The inequality case (Part II) needs the multipliers of the higher levels' rows in the subproblem of level $h$:
@@ -346,7 +348,7 @@ For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with 
 |---|---|
 | factorization from scratch (§3) | $O(M n r)$ |
 | insertion or removal (§12) | $O(n\, r + \dim B\,(t + n))$ |
-| solution of the working set (§5) | $O(M r + n r)$, plus a QR of each conflicting level |
+| solution of the working set (§5) | $O(M r + n r)$, plus a QR of each conflicting level, from the level of the change on |
 | multipliers of a subproblem (§6) | $O(M r)$, reusing those QRs |
 | ratio test (15) | $O(m n)$ over the inactive rows of the levels involved |
 | storage | $O(M^2 + M n)$, allocated once by the constructor |

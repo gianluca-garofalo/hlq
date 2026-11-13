@@ -76,6 +76,7 @@ public:
         levels_ = levels;
         begin_.resize(levels + 1);
         rank_.resize(levels);
+        level_step_.resize(levels, cols_);
     }
 
     /// Number of active rows.
@@ -308,18 +309,25 @@ public:
     /**
      * Hierarchical least-squares solution of the active rows.
      *
+     * The levels before `from` are taken from the last solve: neither their positions nor their goals may
+     * have changed since.
+     *
      * @param goal     target of each position minus its value at the reference; overwritten
      * @param residual on return, the residual (row times step minus goal) of each position
      * @param step     on return, the step from the reference, in the coordinates of the rows
+     * @param from     first level that changed since the last solve
      */
-    void solve(RowsVector& goal, RowsVector& residual, ColsVector& step) {
+    void solve(RowsVector& goal, RowsVector& residual, ColsVector& step, Index from = 0) {
         auto coords = coords_.head(size_);
-        coords.setZero();
-        for (Index k = 0; k < levels_; ++k) {
+        for (Index k = from; k < levels_; ++k) {
             const Index start = begin_(k);
             const Index dim = begin_(k + 1) - start;
             const Index rank = rank_(k);
             const Index dep = dim - rank;
+            if (rank == 0) {
+                coords.segment(start, dim).setZero();
+                level_step_.row(k).setZero();
+            }
             if (dim == 0) {
                 continue;
             }
@@ -337,6 +345,8 @@ public:
                     .template triangularView<Eigen::Lower>()
                     .solveInPlace(coords.segment(start, rank));
                 residual.segment(start, rank).setZero();
+                level_step_.row(k).noalias() =
+                    coords.segment(start, rank).transpose() * basis_.middleRows(start, rank);
                 continue;
             }
 
@@ -357,8 +367,12 @@ public:
             rotated.head(rank).setZero();
             rotated.tail(dep) = -rotated.tail(dep);
             apply_q(f, tau, rotated);
+            // The dependent positions have zero rows of Q, so their coordinates do not matter.
+            coords.segment(start + rank, dep).setZero();
+            level_step_.row(k).noalias() =
+                coords.segment(start, rank).transpose() * basis_.middleRows(start, rank);
         }
-        step.noalias() = basis_.topRows(size_).transpose() * coords;
+        step = level_step_.colwise().sum().transpose();
     }
 
     /**
@@ -533,6 +547,8 @@ private:
     using TailLead =
         Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, grow(MaxRows, 1), MaxRows>;
     using TailVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, grow(MaxRows, 1), 1>;
+    using LevelRows =
+        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, MaxLevels, MaxCols>;
 
     Index cols_;
     Index levels_ = 0;
@@ -557,6 +573,7 @@ private:
     RowsVector coords_;
     RowsVector theta_;
     ColsVector fresh_;
+    LevelRows level_step_;  // each level's part of the step of the last solve
 };
 
 }  // namespace hlq::detail
