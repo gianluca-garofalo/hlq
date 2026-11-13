@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gcc Release, os: ubuntu-24.04, cxx: g++, config: Release, werror: ON }
+          - { name: gcc Debug, os: ubuntu-24.04, cxx: g++, config: Debug, werror: ON }
+          - { name: clang Release, os: ubuntu-24.04, cxx: clang++, config: Release, werror: ON }
+          - { name: Apple clang Release, os: macos-latest, cxx: clang++, config: Release, werror: ON }
+          - { name: MSVC Release, os: windows-latest, cxx: '', config: Release, werror: OFF }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          -DCMAKE_DISABLE_FIND_PACKAGE_Eigen3=ON
+          ${{ matrix.cxx && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }}
+          -DHLQ_WARNINGS_AS_ERRORS=${{ matrix.werror }}
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure --parallel 4
+      - name: Install and use the package
+        shell: bash
+        run: |
+          # Eigen was downloaded by the build: install it too, as a downstream project would find it.
+          cmake -S build/_deps/hlq_eigen-src -B build-eigen -DCMAKE_INSTALL_PREFIX="$PWD/install" \
+            -DBUILD_TESTING=OFF -DEIGEN_BUILD_DOC=OFF -DEIGEN_BUILD_PKGCONFIG=OFF
+          cmake --install build-eigen
+          cmake --install build --config ${{ matrix.config }} --prefix "$PWD/install"
+          cmake -S tests/package -B build-package -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+            -DCMAKE_PREFIX_PATH="$PWD/install" \
+            ${{ matrix.cxx && format('-DCMAKE_CXX_COMPILER={0}', matrix.cxx) || '' }}
+          cmake --build build-package --config ${{ matrix.config }}
+          ctest --test-dir build-package -C ${{ matrix.config }} --output-on-failure
+
+  sanitizers:
+    name: Address and undefined-behaviour sanitizers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHLQ_WARNINGS_AS_ERRORS=ON
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer"
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --parallel 4
+
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the formatting
+        run: |
+          git ls-files '*.hpp' '*.cpp' | xargs clang-format-18 --dry-run --Werror
+
+  python:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+        python: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install .[test]
+      - name: Test
+        run: python -m pytest -v
