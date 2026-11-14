@@ -1,5 +1,7 @@
 // The priority-ordered LQ factorization against an SVD reference, from scratch and after updates.
 
+#include <algorithm>
+#include <cmath>
 #include <random>
 #include <vector>
 
@@ -227,7 +229,7 @@ TEST(PriorityLQ, UpdatesMatchAFreshFactorization) {
                 ++level;
             }
             if (active(i)) {
-                f.remove(i, noise);
+                f.remove(h.view(), i, noise);
             } else {
                 f.insert(h.view(), i, level, noise);
             }
@@ -245,4 +247,73 @@ TEST(PriorityLQ, UpdatesMatchAFreshFactorization) {
             EXPECT_LT((x - y).norm(), 1e-9 * (1 + y.norm())) << "seed " << seed << " change " << change;
         }
     }
+}
+
+TEST(PriorityLQ, RowsInLaterBlocksWithoutDependentRowsGiveTheSameSolutionAndMultipliers) {
+    // Rows inserted with a limit may sit in a later block than their level's; the solution, the ranks of the
+    // levels and the multipliers of the final choice must still be those of a fresh factorization, which
+    // keeps every row in its level's block.
+    int displaced = 0;
+    for (unsigned seed = 0; seed < 500; ++seed) {
+        const Hierarchy h(seed);
+        std::mt19937 gen(seed + 54321u);
+        const Index m = h.rows.rows();
+        const Index levels = h.ends.size();
+        Eigen::Array<bool, Eigen::Dynamic, 1> active = Eigen::Array<bool, Eigen::Dynamic, 1>::Zero(m);
+        for (Index i = 0; i < m; ++i) {
+            active(i) = std::uniform_int_distribution<int>(0, 2)(gen) == 0;
+        }
+        const auto noise = h.noise();
+        Factor f(m, h.rows.cols());
+        f.prepare(levels);
+        f.factor(h.view(), active, h.ends, noise);
+        for (int change = 0; change < 12; ++change) {
+            const auto i = std::uniform_int_distribution<Index>(0, m - 1)(gen);
+            Index level = 0;
+            while (h.ends(level) <= i) {
+                ++level;
+            }
+            if (active(i)) {
+                f.remove(h.view(), i, noise);
+            } else {
+                f.insert(h.view(), i, level, noise, levels);
+            }
+            active(i) = !active(i);
+            displaced += f.displaced() ? 1 : 0;
+            expect_consistent(f, h.rows);
+
+            Factor fresh(m, h.rows.cols());
+            fresh.prepare(levels);
+            fresh.factor(h.view(), active, h.ends, noise);
+            for (Index k = 0; k < levels; ++k) {
+                EXPECT_EQ(f.rank(k), fresh.rank(k)) << "seed " << seed << " change " << change;
+            }
+            const Eigen::VectorXd x = solve(f, h);
+            const Eigen::VectorXd y = solve(fresh, h);
+            ASSERT_LT((x - y).norm(), 1e-9 * (1 + y.norm())) << "seed " << seed << " change " << change;
+
+            Factor::RowsVector residual(m), dual(m), fresh_residual(m), fresh_dual(m);
+            Factor::RowsVector goal(m);
+            Factor::ColsVector step(h.rows.cols());
+            for (Index p = 0; p < f.size(); ++p) {
+                goal(p) = h.targets(f.row(p));
+            }
+            f.solve(goal, residual, step);
+            f.multipliers(f.factored(), residual, dual);
+            for (Index p = 0; p < fresh.size(); ++p) {
+                goal(p) = h.targets(fresh.row(p));
+            }
+            fresh.solve(goal, fresh_residual, step);
+            fresh.multipliers(fresh.factored(), fresh_residual, fresh_dual);
+            double size = 0;
+            for (Index p = 0; p < fresh.size(); ++p) {
+                size = std::max(size, std::abs(fresh_dual(p)));
+            }
+            for (Index p = 0; p < fresh.size(); ++p) {
+                EXPECT_NEAR(dual(f.position(fresh.row(p))), fresh_dual(p), 1e-8 * (1 + size))
+                    << "seed " << seed << " change " << change << " row " << fresh.row(p);
+            }
+        }
+    }
+    EXPECT_GT(displaced, 500);
 }

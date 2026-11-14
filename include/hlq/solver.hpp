@@ -403,8 +403,9 @@ public:
             forward();
         }
         // The factorization is that of the final active set, which starts the next solve: unless the rows or
-        // that active set change in between, it need not be factored again.
-        factor_valid_ = true;
+        // that active set change in between, it need not be factored again. A row left in a block after its
+        // level's would leave with the first truncation of the next solve, so the next solve factors anew.
+        factor_valid_ = !lq_.displaced();
         copy(point_, solution_);
         detail::multiply(matrix_.block(0, 0, rows_, cols_), solution_.data(), values_.data());
         for (Index i = 0; i < rows_; ++i) {
@@ -777,17 +778,15 @@ private:
         trim();
         active_(row) = true;
         lower_side_(row) = at_lower;
-        const Index level = level_of(row);
-        lq_.insert(factored_rows(), row, level, noise_);
-        changed_ = std::min(changed_, level);
+        // A row of a level above the phase may join a later block of levels that are solved exactly.
+        changed_ = std::min(changed_, lq_.insert(factored_rows(), row, level_of(row), noise_, phase_));
     }
 
     void deactivate(Index row) noexcept {
         trim();
         active_(row) = false;
         locked_(row) &= undone_once;
-        changed_ = std::min(changed_, level_of(row));
-        lq_.remove(row, noise_);
+        changed_ = std::min(changed_, lq_.remove(factored_rows(), row, noise_));
     }
 
     /// Activates the constraints of level h that the iterate violates; returns how many.

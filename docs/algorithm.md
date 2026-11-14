@@ -255,7 +255,7 @@ over the optimal set of the levels above it, as in (1).
 
 $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the current working set (`Solver::primal_`). Tolerances: $\tau_f$ is `feasibility_tolerance` (absolute), $\tau_d$ is `dual_tolerance`, relative: a multiplier of subproblem $h$ counts as nonzero above $z_h := \tau_d (1 + \max_i \lvert \lambda_i \rvert)$, since its rounding noise scales with the largest multiplier of the subproblem.
 
-0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$. The factorization of the previous solve's final $W$ is kept: when neither the rows, the metric nor $W$ changed since (only the bounds or the reference did), it is reused instead of factored again.
+0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$. The factorization of the previous solve's final $W$ is kept: when neither the rows, the metric nor $W$ changed since (only the bounds or the reference did), it is reused instead of factored again, unless a row of it sits outside its level's block (§12).
 1. **For $h = 1, \dots, m + 1$:** phase $m + 1$ is the final choice among the optima (§6).
    1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
@@ -330,7 +330,7 @@ Both updates express the rows after the change, the **tail**, in coordinates: on
 
 **Removal of row $p$** (`PriorityLQ::remove`). $B$ holds $q_p$ (if row $p$ was independent) and the directions of the independent tail positions; $C$ is the tail's columns of $K$ on them. $C$ is in echelon form except for its first column, the removed direction.
 
-**Insertion of row $a$** (`PriorityLQ::insert`) at $p$, after the independent rows of its level. One projection on every direction gives its lead coefficients, its coefficients $w$ on the tail's directions, and its residual $c$; a second projection follows when the first cancelled most of $a$ but left more than $\epsilon$ (§15). $B$ holds the tail's directions plus $c / \lVert c \rVert$ when $\lVert c \rVert > \epsilon$; $C$ has the new row $(w, \lVert c \rVert)$ on top of the tail's columns of $K$ (and a zero column). $C$ is in echelon form except for its first row.
+**Insertion of row $a$** (`PriorityLQ::insert`) at $p$: after the independent rows of its level, or at the end of a later block (see *Where an insertion goes* below). One projection on every direction gives its lead coefficients, its coefficients $w$ on the tail's directions, and its residual $c$; a second projection follows when the first cancelled most of $a$ but left more than $\epsilon$ (§15). $B$ holds the tail's directions plus $c / \lVert c \rVert$ when $\lVert c \rVert > \epsilon$; $C$ has the new row $(w, \lVert c \rVert)$ on top of the tail's columns of $K$ (and a zero column). $C$ is in echelon form except for its first row.
 
 **Echelon form by rotations** (`PriorityLQ::rotate_tail`). Process the tail's positions in order, level by level, with a counter `next` of the first coordinate not yet taken:
 1. **Pivot** inside the level on the row with the most left on the free coordinates (downdated squared norms, recomputed when they fall below $\sqrt u$ of their start).
@@ -338,6 +338,22 @@ Both updates express the rows after the change, the **tail**, in coordinates: on
 3. **Decide.** If the entry on `next` exceeds $\epsilon_k$ in magnitude, the row is independent: it takes coordinate `next` (sign made positive), its direction is that row of $B$, and the rows below get their coefficients on it from that column of $C$. Otherwise it is dependent, and what it has left is dropped.
 
 The structure keeps this cheap: after a removal each row has one coordinate to absorb (one rotation); after an insertion the new row needs up to $\dim B - 1$ rotations and every later row one or two. Each rotation costs $O(t + n)$ for $t$ tail rows, so an update costs $`O(n\, r_{\text{lead}})`$ for the projection plus $`O(\dim B\,(t + n))`$ for the rotations. Coordinates that no row takes are directions the tail no longer needs. A tail row whose new entry exceeds $\epsilon$ becomes independent; when an insertion takes a direction a lower level was using, the step-3 test decides which tail row loses it.
+
+**Where an insertion goes.** The positions form blocks, one per level, and a row normally sits in its level's block. A *run* is a sequence of consecutive blocks none of which has a dependent row. The factorization keeps one invariant:
+
+- every active row of level $k$ sits in a block $b \ge k$ such that the blocks $k, \dots, b$ have no dependent row.
+
+An inserted row of level $k$ goes to the end of the last block $b$ of the run that starts at block $k$ (up to a limit that the caller sets), provided it is independent of the rows of the blocks up to $b$: with $w_{\text{after}}$ its coefficients on the directions of the later blocks, $\lVert w_{\text{after}} \rVert^2 + \lVert c \rVert^2 > \epsilon_k^2$. Otherwise it goes after the independent rows of its level, as above. At the end of block $b$, the only positions after it are those of the blocks after $b$.
+
+The invariant leaves the solution and the multipliers as they are with every row in its level's block, in exact arithmetic:
+
+- **Solution.** A row cannot leave the run that holds its level, since the block after a run has a dependent row. So the blocks of a run hold exactly the active rows of the run's levels, and these are independent of each other and of the rows before the run: (5) meets every one of them exactly, in either order, and the blocks after the run see the same constraints.
+- **Multipliers of subproblem $h$** (§6). If level $h$ is inside a run, its active rows are met exactly, its residuals are zero, and so are all the multipliers of its subproblem, in either order. Otherwise the blocks before $h$ hold exactly the rows of the levels before $h$. The blocks of a run have no dependent row, so their $F_k$ are square and (12)–(13) determine the multipliers of the run's rows uniquely; the blocks of conflicting levels hold their own rows only, so their minimum-norm choice is unchanged.
+- **Ranks.** `PriorityLQ::rank` counts the independent rows of a level wherever they sit.
+
+An update can lower the rank of the blocks after it (§11), which could put a dependent row between a row and its level's block. After every update, `PriorityLQ::settle` checks the rows of the changed block and of the later ones, and if one breaks the invariant, it factors the active rows again (§3), each in its level's block. This has not happened on the benchmark families.
+
+The solver lets a row of a level above the phase $h$ go up to block $h - 1$ (in the last phase, up to the last block). In phase $h$, the levels above $h$ are solved, and almost always every one of them meets its active rows exactly: they form one run, the rows that the ratio test adds to them are independent of it, and the positions after the insertion are those of level $h$ alone instead of every level between. On the large family (20–40 variables), this shortens those tails from 14 positions to 5 on average, and from 34 to 9 with 60–100 variables. Rows never go to block $h$ or later, whose dependent rows the phase may still change. Truncation (§9) drops the blocks after the phase; within a solve it never drops such a row, since a row goes only to blocks above the current phase. A solve that ends with a row outside its level's block does not hand its factorization to the next one, which factors anew (step 0 of §9).
 
 **Pivoting and drift.** Rows keep their order inside a level except as step 1 reorders the tail. A factorization reused across solves (step 0 of §9) is only ever updated, by orthogonal rotations and re-orthogonalized insertions: after 20,000 warm solves in a row, with the bounds moving, the solutions agree with fresh factorizations to $10^{-14}$, and `tests/test_reuse.cpp` checks 2,000.
 
@@ -350,7 +366,7 @@ For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with 
 | operation | cost |
 |---|---|
 | factorization from scratch (§3) | $O(M n r)$ |
-| insertion or removal (§12) | $`O(n\, r + \dim B\,(t + n))`$ |
+| insertion or removal (§12) | $`O(n\, r + \dim B\,(t + n))`$; $t$ is, for most insertions at levels above the phase, the active rows of the phase's level only |
 | solution of the working set (§5) | $O(M r + n r)$, plus a QR of each conflicting level, from the level of the change on |
 | multipliers of a subproblem (§6) | $O(M r)$, reusing those QRs |
 | ratio test (15) | $O(n)$ per inactive row of the levels involved, $O(1)$ for a bound on one variable |
@@ -388,7 +404,7 @@ The form of (4) computes $d_i = \lVert c_i \rVert^2$ from the vector itself. Its
 
 The tests (`tests/`) check the implementation in three independent ways:
 
-- **Against an SVD reference** (`tests/support/reference.hpp`): nested null spaces with SVD. The factorization's ranks, solution and multipliers must match on random equality hierarchies with rank-deficient levels, rows dependent on the levels above, and ill-conditioned levels; after random insertions and removals, every update must match a fresh factorization.
+- **Against an SVD reference** (`tests/support/reference.hpp`): nested null spaces with SVD. The factorization's ranks, solution and multipliers must match on random equality hierarchies with rank-deficient levels, rows dependent on the levels above, and ill-conditioned levels; after random insertions and removals, every update must match a fresh factorization, also when insertions may go to later blocks (§12): then the solution, the ranks of the levels and the multipliers of the final choice must match.
 - **With an optimality certificate** (`tests/support/certificate.hpp`), independent of the solver: at every level, the gradient of its squared violation must be balanced by multipliers of the bounds tight above it with the sign their side allows, found by non-negative least squares (Lawson and Hanson); and the final choice must be balanced the same way. Random, integer, degenerate (many parallel rows) and large problems, cold, warm, from another problem's active set, in a metric, and without a final regularization level. A test checks that the certificate rejects perturbed solutions.
 - **Against other solvers** (`benchmarks/compare.cpp`): level by level against LexLS, HierarchicalQP and DAQP, pinned; hlq is never worse on well-conditioned families, and on ill-conditioned ones it is better more often than not.
 

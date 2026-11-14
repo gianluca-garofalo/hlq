@@ -26,6 +26,11 @@ namespace hlq::detail {
  * - `multipliers` gives the multipliers of a level's subproblem by backward substitution with K^T;
  * - `insert` and `remove` change one active row and update only the positions after it, by Givens rotations.
  *
+ * Positions are grouped in blocks, one per level. A row normally sits in the block of its level, but `insert`
+ * may put it in a later block when that block and every block from its level on have no dependent row: such
+ * blocks are satisfied exactly in any order, so the solution and the multipliers stay those of the priority
+ * order, and the row has fewer positions after it to update.
+ *
  * Nothing above the diagonal of K is ever written, so that part stays zero. All workspace is allocated by the
  * constructor and `prepare`; no other member allocates.
  */
@@ -46,6 +51,7 @@ public:
           row_(max_rows),
           position_(max_rows),
           level_of_(max_rows),
+          kept_(max_rows),
           coefs_(max_rows, max_rows),
           basis_(max_rows, cols),
           rows_(max_rows + 1, cols + 1),
@@ -61,6 +67,7 @@ public:
           theta_(max_rows),
           fresh_(cols) {
         coefs_.fill(Scalar(0));
+        kept_.fill(false);
     }
 
     /// Sizes the arrays over levels (allocating only when there are more levels than before).
@@ -68,6 +75,8 @@ public:
         levels_ = levels;
         begin_.resize(levels + 1);
         rank_.resize(levels);
+        level_end_.resize(levels);
+        last_conflict_.resize(levels);
         level_step_.resize(levels, cols_);
     }
 
@@ -77,10 +86,31 @@ public:
     [[nodiscard]] Index row(Index position) const noexcept { return row_(position); }
     /// Position of a problem row, or -1 when it is not active.
     [[nodiscard]] Index position(Index row) const noexcept { return position_(row); }
-    /// First position of a level; `begin(levels)` is the number of active rows.
-    [[nodiscard]] Index begin(Index level) const noexcept { return begin_(level); }
-    /// Number of independent rows of a level.
-    [[nodiscard]] Index rank(Index level) const noexcept { return rank_(level); }
+    /// First position of a block; `begin(levels)` is the number of active rows.
+    [[nodiscard]] Index begin(Index block) const noexcept { return begin_(block); }
+    /// Number of independent active rows of a level, wherever they sit.
+    [[nodiscard]] Index rank(Index level) const noexcept {
+        if (!loose_) {
+            return rank_(level);
+        }
+        Index rank = 0;
+        for (Index p = 0; p < size_; ++p) {
+            rank += level_of_(row_(p)) == level && coefs_(p, p) > 0 ? 1 : 0;
+        }
+        return rank;
+    }
+    /// Whether a row sits in a block after its level's.
+    [[nodiscard]] bool displaced() const noexcept {
+        for (Index p = 0, block = 0; loose_ && p < size_; ++p) {
+            while (begin_(block + 1) <= p) {
+                ++block;
+            }
+            if (level_of_(row_(p)) < block) {
+                return true;
+            }
+        }
+        return false;
+    }
     /// K, by position.
     [[nodiscard]] MatrixRef<const Scalar> coefficients() const noexcept {
         return coefs_.block(0, 0, size_, size_);
@@ -105,8 +135,10 @@ public:
                 Index count = -1) {
         size_ = 0;
         factored_ = 0;
+        loose_ = false;
         for (Index k = 0, i = 0; k < levels_; ++k) {
             begin_(k) = size_;
+            level_end_(k) = static_cast<Index>(level_end(k));
             for (; i < static_cast<Index>(level_end(k)); ++i) {
                 level_of_(i) = k;
                 position_(i) = -1;
@@ -120,9 +152,13 @@ public:
         }
     }
 
-    /// Leaves the levels after `level` out of the factorization, at no cost; `append` brings them back.
+    /// Leaves the levels after `level` out of the factorization, at no cost; `append` brings them back. No
+    /// row of `level` or above may sit in a later block.
     void truncate(Index level) noexcept {
         const Index end = begin_(level + 1);
+        for (Index p = end; loose_ && p < size_; ++p) {
+            HLQ_ASSERT(level_of_(row_(p)) > level);
+        }
         for (Index p = end; p < size_; ++p) {
             position_(row_(p)) = -1;
         }
@@ -223,16 +259,22 @@ public:
     }
 
     /**
-     * Makes a problem row active and updates the positions after it.
+     * Makes a problem row active and updates the positions after it; returns the first block that changed.
      *
-     * The row goes after the independent rows of its level. Its coefficients on every direction take one
-     * pass, or two when the first cancels most of the row; the positions after it keep their coefficients on
-     * the directions before it and are brought back to echelon form by Givens rotations.
+     * The row goes after the independent rows of its level, or at the end of the last block before `limit`
+     * that it reaches from its level through blocks without dependent rows (see the class), if it is
+     * independent of the rows up to there. Its coefficients on every direction take one pass, or two when the
+     * first cancels most of the row; the positions after it keep their coefficients on the directions before
+     * it and are brought back to echelon form by Givens rotations.
      */
-    void insert(Rows rows, Index row, Index level, const LevelsVector& noise) {
-        const Index p = begin_(level) + rank_(level);
+    Index insert(Rows rows, Index row, Index level, const LevelsVector& noise, Index limit = 0) {
+        Index block = level;
+        if (rank_(level) == begin_(level + 1) - begin_(level)) {
+            while (block + 1 < limit && rank_(block + 1) == begin_(block + 2) - begin_(block + 1)) {
+                ++block;
+            }
+        }
         const Index size = size_;
-        const Index tail = size - p;
         const MatrixRef<const Scalar> basis = basis_.block(0, 0, size, cols_);
 
         Scalar* coef = scratch_.data();
@@ -250,6 +292,20 @@ public:
             multiply_transposed_add(Scalar(-1), basis, second, fresh);
         }
         const Scalar outside = std::sqrt(squared_norm(fresh, cols_));
+
+        Index p = begin_(level) + rank_(level);
+        if (block > level) {
+            // Independent of the blocks up to `block`: what it has outside them is above the threshold.
+            const Index end = begin_(block + 1);
+            const Scalar beyond = outside * outside + squared_norm(coef + end, size - end);
+            if (beyond > noise(level) * noise(level)) {
+                p = end;
+                loose_ = true;
+            } else {
+                block = level;
+            }
+        }
+        const Index tail = size - p;
 
         // The positions from p on, in coordinates: the directions after p, plus the new one if any.
         Index dim = 0;
@@ -285,19 +341,24 @@ public:
         place(p, row);
         level_of_(row) = level;
         ++size_;
-        for (Index k = level + 1; k <= levels_; ++k) {
+        for (Index k = block + 1; k <= levels_; ++k) {
             ++begin_(k);
         }
         for (Index t = 0; t <= tail; ++t) {
             std::copy_n(tail_lead_.row(t), p, coefs_.row(p + t));
         }
         rotate_tail(p, dim, noise);
+        return settle(rows, block, noise);
     }
 
-    /// Makes an active problem row inactive and updates the positions after it by Givens rotations.
-    void remove(Index row, const LevelsVector& noise) {
+    /// Makes an active problem row inactive and updates the positions after it by Givens rotations; returns
+    /// the first block that changed.
+    Index remove(Rows rows, Index row, const LevelsVector& noise) {
         const Index p = position_(row);
-        const Index level = level_of_(row);
+        Index block = 0;
+        while (begin_(block + 1) <= p) {
+            ++block;
+        }
         const Index size = size_;
         const Index tail = size - p - 1;
 
@@ -321,13 +382,14 @@ public:
             place(j, row_(j + 1));
         }
         --size_;
-        for (Index k = level + 1; k <= levels_; ++k) {
+        for (Index k = block + 1; k <= levels_; ++k) {
             --begin_(k);
         }
         for (Index t = 0; t < tail; ++t) {
             std::copy_n(tail_lead_.row(t), p, coefs_.row(p + t));
         }
         rotate_tail(p, dim, noise);
+        return settle(rows, block, noise);
     }
 
     /**
@@ -470,6 +532,45 @@ private:
         }
     }
 
+    /**
+     * After an update in `block`: if a row of that block or a later one now sits in a block after its
+     * level's with a dependent row in between (an update can lower the rank of the blocks from its own on),
+     * every row goes back to its level's block, by a new factorization. Returns the first block that changed.
+     */
+    Index settle(Rows rows, Index block, const LevelsVector& noise) {
+        if (!loose_) {
+            return block;
+        }
+        // The last block with a dependent row, up to each block, and whether a row is past one.
+        Index* last = last_conflict_.data();
+        for (Index k = 0, conflict = -1; k < levels_; ++k) {
+            if (rank_(k) < begin_(k + 1) - begin_(k)) {
+                conflict = k;
+            }
+            last[k] = conflict;
+        }
+        bool broken = false;
+        for (Index q = begin_(block), k = block; q < size_ && !broken; ++q) {
+            while (begin_(k + 1) <= q) {
+                ++k;
+            }
+            broken = level_of_(row_(q)) < k && last[k] >= level_of_(row_(q));
+        }
+        if (!broken) {
+            return block;
+        }
+        for (Index q = 0; q < size_; ++q) {
+            kept_(row_(q)) = true;
+        }
+        const Index count = factored_;
+        const Index total = level_end_(levels_ - 1);
+        factor(rows, kept_, level_end_, noise, count);
+        for (Index i = 0; i < total; ++i) {
+            kept_(i) = false;
+        }
+        return 0;
+    }
+
     /// Downdated squared norms are recomputed below this fraction of where they started.
     static Scalar recompute_below() noexcept { return std::sqrt(std::numeric_limits<Scalar>::epsilon()); }
 
@@ -552,7 +653,7 @@ private:
                     rows(i, c) = Scalar(0);
                 }
 
-                if (next < dim && std::abs(rows(i, next)) > noise(k)) {
+                if (next < dim && std::abs(rows(i, next)) > noise(level_of_(row_(pos)))) {
                     if (rows(i, next) < Scalar(0)) {
                         for (Index l = i; l < tail; ++l) {
                             rows(l, next) = -rows(l, next);
@@ -593,8 +694,12 @@ private:
     Positions row_;                           // problem row of each position
     Positions position_;                      // position of each problem row, or -1
     Positions level_of_;                      // level of each problem row
-    LevelStarts begin_;                       // first position of each level, then the number of positions
-    LevelIndices rank_;                       // independent rows of each level
+    Vector<bool, MaxRows> kept_;              // the active rows, while `settle` factors them again
+    LevelIndices last_conflict_;              // workspace of `settle`
+    LevelIndices level_end_;                  // end of each level among the problem rows, from `factor`
+    bool loose_ = false;                      // a row may sit in a block after its level's
+    LevelStarts begin_;                       // first position of each block, then the number of positions
+    LevelIndices rank_;                       // independent rows of each block
     Square coefs_;                            // K
     Matrix<Scalar, MaxRows, MaxCols> basis_;  // Q
     Matrix<Scalar, grow(MaxRows, 1), grow(MaxCols, 1)> rows_;  // rows being factored or rotated
