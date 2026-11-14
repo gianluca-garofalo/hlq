@@ -89,6 +89,11 @@ constexpr int grow(int capacity, int extra) noexcept {
     return capacity == dynamic ? dynamic : capacity + extra;
 }
 
+/// The sum of two compile-time capacities, or `dynamic`.
+constexpr int sum(int a, int b) noexcept {
+    return a == dynamic || b == dynamic ? dynamic : a + b;
+}
+
 /// The product of two compile-time capacities, or `dynamic`.
 constexpr int product(int a, int b) noexcept {
     return a == dynamic || b == dynamic ? dynamic : a * b;

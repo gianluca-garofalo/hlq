@@ -14,6 +14,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
   `hlq/eigen.hpp` maps them as Eigen vectors.
 - A last level of equalities with full column rank, such as x = 0, is taken as the choice among the optima of
   the levels above instead of being searched (`Settings::fold_final_level`).
+- A solve keeps the factorization of its final active set, and the next one reuses it when only the bounds or the
+  reference changed.
 - Compile-time capacities (`Solver<Scalar, MaxRows, MaxCols, MaxLevels>`) without heap allocation, and single
   precision.
 - Python bindings (`hlq.Solver`, `hlq.Solver32`).
