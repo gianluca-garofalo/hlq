@@ -359,6 +359,51 @@ template <bool Add, typename T>
     }
 }
 
+/// y[i] <- A.row(i) x for the rows i of a list, four at a time.
+template <typename T>
+[[gnu::noinline]] void multiply_rows(MatrixRef<const T> a, const Index* rows, Index count, const T* x,
+                                     T* y) noexcept {
+    using S = Simd<T>;
+    constexpr Index w = S::width;
+    const Index n = a.cols;
+    const Index packed = n - n % w;
+    Index k = 0;
+    for (; k + 4 <= count; k += 4) {
+        const T* r0 = a.row(rows[k]);
+        const T* r1 = a.row(rows[k + 1]);
+        const T* r2 = a.row(rows[k + 2]);
+        const T* r3 = a.row(rows[k + 3]);
+        typename S::Pack s0{};
+        typename S::Pack s1{};
+        typename S::Pack s2{};
+        typename S::Pack s3{};
+        for (Index j = 0; j < packed; j += w) {
+            const auto v = S::load(x + j);
+            s0 += S::load(r0 + j) * v;
+            s1 += S::load(r1 + j) * v;
+            s2 += S::load(r2 + j) * v;
+            s3 += S::load(r3 + j) * v;
+        }
+        T t0 = S::sum(s0);
+        T t1 = S::sum(s1);
+        T t2 = S::sum(s2);
+        T t3 = S::sum(s3);
+        for (Index j = packed; j < n; ++j) {
+            t0 += r0[j] * x[j];
+            t1 += r1[j] * x[j];
+            t2 += r2[j] * x[j];
+            t3 += r3[j] * x[j];
+        }
+        y[rows[k]] = t0;
+        y[rows[k + 1]] = t1;
+        y[rows[k + 2]] = t2;
+        y[rows[k + 3]] = t3;
+    }
+    for (; k < count; ++k) {
+        y[rows[k]] = dot(a.row(rows[k]), x, n);
+    }
+}
+
 /// y <- y + alpha A^T x, four rows of A at a time.
 template <typename T>
 [[gnu::noinline]] void multiply_transposed_add(T alpha, MatrixRef<const T> a, const T* x, T* y) noexcept {
@@ -502,6 +547,20 @@ void multiply(ConstRef<T> a, const T* x, T* y, T alpha = T(1)) noexcept {
         } else {
             y[i] = value;
         }
+    }
+}
+
+/// y[i] <- A.row(i) x for the rows i of a list.
+template <typename T>
+void multiply_rows(ConstRef<T> a, const Index* rows, Index count, const T* x, T* y) noexcept {
+#if HLQ_VECTOR_EXTENSIONS
+    if (a.cols >= simd_length) {
+        simd::multiply_rows(a, rows, count, x, y);
+        return;
+    }
+#endif
+    for (Index k = 0; k < count; ++k) {
+        y[rows[k]] = dot(a.row(rows[k]), x, a.cols);
     }
 }
 
