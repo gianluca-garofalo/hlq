@@ -118,7 +118,7 @@ So the block of level $k$ in $K$ is the level's projected rows written in a basi
 By Lemma 2, $B_k = F_k \hat Q_k$ with $F_k$ of full column rank and $\hat Q_k$ of full row rank, so $B_k^\dagger = \hat Q_k^\dagger F_k^\dagger = \hat Q_k^\top F_k^\dagger$. Write $x^{(k)} = \sum_{j \le k} \hat Q_j^\top y_j$. Since $\hat Q_j \hat Q_l^\top = \delta_{jl} I$ and $A_k = \sum_{j \le k} K_{kj} \hat Q_j$, (3) becomes
 
 ```math
-g_k = b_k - \sum_{j<k} K_{kj}\, y_j, \qquad y_k = F_k^\dagger g_k, \qquad x = \hat Q^\top y \tag{5}
+g_k = b_k - \sum_{j < k} K_{kj}\, y_j, \qquad y_k = F_k^\dagger g_k, \qquad x = \hat Q^\top y \tag{5}
 ```
 
 Here $y$ stacks all $y_k$ ($r$ entries). Rows of later levels do not change $A_k x$, because $A_k \hat Q_j^\top = 0$ for $j > k$. Hence the residual of level $k$ in the final solution is exactly the residual of its own least-squares problem:
@@ -159,7 +159,7 @@ The inequality case (Part II) needs the multipliers of the higher levels' rows i
 \min_x \tfrac12 \lVert A_h x - b_h \rVert^2 \quad \text{s.t.} \quad \bar A_{h-1} x = \bar A_{h-1} x^{(h-1)} \tag{9}
 ```
 
-With $\lambda_h := \rho_h$, stationarity of its Lagrangian $\tfrac12 \lVert A_h x - b_h \rVert^2 + \sum_{k<h} \lambda_k^\top (A_k x - A_k x^{(h-1)})$ reads
+With $\lambda_h := \rho_h$, stationarity of its Lagrangian $\tfrac12 \lVert A_h x - b_h \rVert^2 + \sum_{k < h} \lambda_k^\top (A_k x - A_k x^{(h-1)})$ reads
 
 ```math
 \sum_{k \le h} A_k^\top \lambda_k = 0 \tag{10}
