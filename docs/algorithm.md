@@ -249,7 +249,7 @@ over the optimal set of the levels above it, as in (1).
 
 **Working set.** $W$ is a set of rows, each with a side $\sigma_i \in \{+1, -1\}$ (upper or lower bound) and target $\beta_i = u_i$ or $l_i$. Equality rows are always in $W$. For fixed $W$, the problem "make the rows of $W$ equal to their targets, level by level" is Part I. Write $\bar x(W)$ for its solution.
 
-**Locked rows.** These are rows of $W$ that may no longer be removed. Equality rows are locked from the start.
+**Locked rows.** These are rows of $W$ that may no longer be removed. Equality rows are locked from the start. A row can also be locked for one phase only (§9, step 2).
 
 ### 9. The active-set loop
 
@@ -262,13 +262,14 @@ $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the curr
       $$
       t_i = \mathrm{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}
       $$
-      The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2.
+      The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2. If row $i$ is the row the last change removed and $\hat x$ moved by at most $\tau_f$ in every coordinate, the insertion undoes that removal; the second time this happens to a row in phase $h$, lock it until the end of the phase.
    3. **Drop test.** Set $\hat x \leftarrow \bar x$ and compute the multipliers of subproblem $h$ (§6). For a level's own rows these are its residuals, $\lambda_i = \rho_i$. Let $i$ be the unlocked row of $W$ in levels $\le h$ that maximizes $-\sigma_i \lambda_i$. If $-\sigma_i \lambda_i > z_h$, remove it (§12) and go back to step 2.
    4. **Lock.** Lock every row of $W$ in levels $\le h$ with $\sigma_i \lambda_i > z_h$, then go to the next $h$.
 2. **Return $\hat x$**, with `Status::Solved`, or `Status::MaxChanges` once `max_changes` insertions plus removals are spent.
 
 **Why each rule:**
 - **Ratio test.** $\hat x$ satisfies every inactive row of the levels already processed, so the levels above $h$ never get worse. Jumping straight to $\bar x$ can violate rows that earlier phases satisfied; that breaks solved levels and cycles.
+- **Cycle guard.** A removal that the ratio test undoes at once leaves $W$ and $\hat x$ as they were, so the drop test removes the same row again. Once can be a degenerate step; twice in a phase is a cycle. In the cases seen, the levels above $h$ are ill-conditioned: removing the row lets $\bar x$ improve a level above $h$ by an amount below the tolerances, which the row's own bound forbids. The row's multiplier is then not a usable sign, and the lock stops the search there, as `max_changes` would, but at once.
 - **Sign test.** Take a row at its upper bound in subproblem (9), with the inequality $a_i x \le u_i$ in the Lagrangian as $\mu_i (a_i x - u_i)$, $\mu_i \ge 0$. Then $\mu_i = \lambda_i$, so the condition is $\sigma_i \lambda_i \ge 0$; the lower side is symmetric. For a row of level $h$, $\sigma_i \rho_i \ge 0$ says the row is on, or beyond, its bound on the side it is active for.
 - **Locking.** If $\sigma_i \lambda_i > z_h$ at level $h$, moving the row off its bound strictly increases $f_h$, so it must stay there for all lower levels. If $\lvert \lambda_i \rvert \le z_h$, level $h$ does not care, and a lower level may still release the row (Example 2). A threshold that does not scale with the multipliers locks rounding noise: in single precision, a multiplier that is $10^{-5}$ only because the others are $10^2$ would lock a bound that a lower level must release.
 - **The last phase.** The working set's solution is the point closest to the reference within the affine set of its active rows, but the optimal set may be larger: an inactive-at-every-level constraint (zero multipliers everywhere) may hold the solution away from the reference. Phase $m + 1$ releases those, with the same ratio test.
@@ -392,7 +393,7 @@ The tests (`tests/`) check the implementation in three independent ways:
 The no-allocation guarantee is checked by a test that counts the calls to a replaced global `operator new`. CI runs everything with gcc, clang and MSVC, and under the address and undefined-behaviour sanitizers.
 
 **Known limits.**
-- On degenerate, ill-conditioned problems the active-set search can cycle until `max_changes` (about 1 in 2000 of the degenerate ill-conditioned family); the solver then returns `Status::MaxChanges` with a point that satisfies the levels it finished.
+- On ill-conditioned problems, a level can be decided by differences below the tolerances, and the levels below it then end short of the certificate's optimum: 8 of 40,000 problems of the integer and degenerate ill-conditioned families. The cycle guard of §9 ends the search on such problems, which would otherwise cycle until `max_changes`.
 - In single precision, decisions within `feasibility_tolerance` ($10^{-5}$) of a bound can change lower levels of badly balanced problems.
 
 ### References

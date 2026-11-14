@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <span>
@@ -104,7 +105,7 @@ public:
         solution_.fill(Scalar(0));
         active_.fill(false);
         lower_side_.fill(false);
-        locked_.fill(false);
+        locked_.fill(0);
         equality_.fill(false);
     }
 
@@ -272,7 +273,7 @@ public:
         for (Index i = 0; i < max_rows_; ++i) {
             active_(i) = equality_(i);
             lower_side_(i) = equality_(i);
-            locked_(i) = false;
+            locked_(i) = 0;
         }
         factor_valid_ = false;
     }
@@ -286,7 +287,7 @@ public:
         changes_ = 0;
         bool equalities_only = true;
         for (Index i = 0; i < rows_; ++i) {
-            locked_(i) = equality_(i);
+            locked_(i) = equality_(i) ? locked_for_good : 0;
             equalities_only = equalities_only && equality_(i);
         }
         if (!factor_valid_) {
@@ -301,8 +302,16 @@ public:
         // Phases 0 to searched - 1 solve the levels; phase `searched` chooses among their optima the point
         // closest to the reference, releasing the constraints that hold the step back and that no level
         // needs. With a folded last level, that choice is the last level itself (see `fold`).
+        bool undone_in_phase = false;  // a constraint carries undone_once or pinned_for_phase
         for (Index h = 0; !equalities_only && changes_ < settings_.max_changes && h <= searched_; ++h) {
             phase_ = h;
+            Index released = -1;  // the constraint released by the last change, if that was a release
+            if (undone_in_phase) {
+                for (Index i = 0; i < rows_; ++i) {
+                    locked_(i) &= locked_for_good;
+                }
+                undone_in_phase = false;
+            }
             if (h < searched_) {
                 // A level left out of the factorization during an earlier phase comes back now.
                 const bool appended = lq_.factored() == h;
@@ -322,10 +331,24 @@ public:
                 bool at_lower = false;
                 const Scalar step = ratio_test(h, row, at_lower);
                 if (row >= 0) {
+                    // Stopping on the constraint just released, before the iterate moves by more than the
+                    // feasibility tolerance, undoes that release. Once can be a degenerate step; a second
+                    // time for the same constraint in a phase is a cycle, whose release would let a level
+                    // above improve by less than the tolerances: the constraint comes back pinned, for the
+                    // rest of the phase.
+                    bool undone = row == released;
+                    for (Index j = 0; undone && j < cols_; ++j) {
+                        undone = std::abs(step * (primal_(j) - point_(j))) <= settings_.feasibility_tolerance;
+                    }
                     for (Index j = 0; j < cols_; ++j) {
                         point_(j) += step * (primal_(j) - point_(j));
                     }
                     activate(row, at_lower);
+                    if (undone) {
+                        locked_(row) |= (locked_(row) & undone_once) != 0 ? pinned_for_phase : undone_once;
+                        undone_in_phase = true;
+                    }
+                    released = -1;
                     forward();
                     ++changes_;
                     continue;
@@ -346,12 +369,13 @@ public:
                 for (Index p = 0; p < active_above; ++p) {
                     const Index i = lq_.row(p);
                     const Scalar wrong = lower_side_(i) ? dual_(p) : -dual_(p);
-                    if (!locked_(i) && wrong > worst) {
+                    if ((locked_(i) & (locked_for_good | pinned_for_phase)) == 0 && wrong > worst) {
                         worst = wrong;
                         drop = i;
                     }
                 }
                 if (drop >= 0) {
+                    released = drop;
                     deactivate(drop);
                     forward();
                     ++changes_;
@@ -362,7 +386,7 @@ public:
                 for (Index p = 0; p < active_above; ++p) {
                     const Index i = lq_.row(p);
                     if ((lower_side_(i) ? dual_(p) : -dual_(p)) < -zero) {
-                        locked_(i) = true;
+                        locked_(i) |= locked_for_good;
                     }
                 }
                 break;
@@ -479,6 +503,11 @@ private:
     using ColsVector = detail::Vector<Scalar, MaxCols>;
     using RowsVector = detail::Vector<Scalar, MaxRows>;
     using Mask = detail::Vector<bool, MaxRows>;
+    /// A constraint locked for good keeps its bound for every lower level; one pinned for the phase, after
+    /// its release was undone at once (see `solve`), only until the next phase.
+    static constexpr std::uint8_t locked_for_good = 1;
+    static constexpr std::uint8_t pinned_for_phase = 2;
+    static constexpr std::uint8_t undone_once = 4;  // its release was undone once in this phase
     using LevelEnds = detail::Vector<Index, MaxLevels>;
     using LevelsVector = typename Factorization::LevelsVector;
 
@@ -756,7 +785,7 @@ private:
     void deactivate(Index row) noexcept {
         trim();
         active_(row) = false;
-        locked_(row) = false;
+        locked_(row) &= undone_once;
         changed_ = std::min(changed_, level_of(row));
         lq_.remove(row, noise_);
     }
@@ -868,7 +897,8 @@ private:
 
     Mask active_;
     Mask lower_side_;  // active constraints held at their lower bound
-    Mask locked_;      // active constraints that may no longer leave
+    detail::Vector<std::uint8_t, MaxRows>
+        locked_;  // active constraints that may not leave: see locked_for_good
     Mask equality_;
 
     Factorization lq_;
