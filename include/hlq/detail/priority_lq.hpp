@@ -191,8 +191,10 @@ public:
                 }
 
                 // A second pass keeps Q orthonormal to working precision. It is only needed when the
-                // first one cancelled most of the row (Daniel, Gragg, Kaufman and Stewart, 1976).
-                if (p > 0 && squared_norm(level.row(j), cols_) < Scalar(0.5) * entry_(p)) {
+                // first one cancelled most of the row (Daniel, Gragg, Kaufman and Stewart, 1976), and not
+                // for a row left below the rank threshold, which gets no direction.
+                const Scalar once = squared_norm(level.row(j), cols_);
+                if (p > 0 && once < Scalar(0.5) * entry_(p) && once > noise(k) * noise(k)) {
                     Scalar* again = scratch_.data();
                     multiply(basis_.block(0, 0, p, cols_), level.row(j), again);
                     axpy(Scalar(1), again, coefs_.row(p), p);
@@ -239,7 +241,8 @@ public:
         const Scalar length = squared_norm(fresh, cols_);
         multiply(basis, fresh, coef);
         multiply_transposed_add(Scalar(-1), basis, coef, fresh);
-        if (squared_norm(fresh, cols_) < Scalar(0.5) * length) {
+        const Scalar once = squared_norm(fresh, cols_);
+        if (once < Scalar(0.5) * length && once > noise(level) * noise(level)) {
             // The first pass cancelled most of the row: a second one restores orthogonality.
             Scalar* second = second_.data();
             multiply(basis, fresh, second);

@@ -82,7 +82,7 @@ Order the rows by level, level 1 first. Rows inside a level may be reordered fre
 
 1. **Start the level.** For each row $l$ of the level, project it on every direction found so far: $\kappa_{lj} = a_l q_j^\top$ and residual $c_l = a_l - \sum_j \kappa_{lj} q_j$.
 2. **Pivot.** Take next the remaining row $i$ of the level with the largest $\lVert c_i \rVert$.
-3. **Second pass.** If the first pass cancelled most of the row, $\lVert c_i \rVert^2 < \tfrac12 \lVert a_i \rVert^2$, then for every direction found so far $\kappa_{ij} \leftarrow \kappa_{ij} + c_i q_j^\top$ and $`c_i \leftarrow c_i - (c_i q_j^\top)\, q_j`$. This keeps $Q$ orthonormal to working precision (§15).
+3. **Second pass.** If the first pass cancelled most of the row, $\lVert c_i \rVert^2 < \tfrac12 \lVert a_i \rVert^2$, but left it above the rank threshold, $\lVert c_i \rVert > \epsilon$, then for every direction found so far $\kappa_{ij} \leftarrow \kappa_{ij} + c_i q_j^\top$ and $`c_i \leftarrow c_i - (c_i q_j^\top)\, q_j`$. This keeps $Q$ orthonormal to working precision (§15).
 4. **Decide the rank.** If $\lVert c_i \rVert > \epsilon$, row $i$ is independent: $\kappa_{ii} = \lVert c_i \rVert$ and $q_i = c_i / \kappa_{ii}$. Otherwise row $i$ is dependent: $\kappa_{ii} = 0$ and $q_i = 0$.
 5. **Update the level.** If $q_i \neq 0$, then for every remaining row $l$ of the level, $\kappa_{li} = c_l q_i^\top$ and $c_l \leftarrow c_l - \kappa_{li} q_i$. Go back to step 2 until the level is done.
 
@@ -330,7 +330,7 @@ Both updates express the rows after the change, the **tail**, in coordinates: on
 
 **Removal of row $p$** (`PriorityLQ::remove`). $B$ holds $q_p$ (if row $p$ was independent) and the directions of the independent tail positions; $C$ is the tail's columns of $K$ on them. $C$ is in echelon form except for its first column, the removed direction.
 
-**Insertion of row $a$** (`PriorityLQ::insert`) at $p$, after the independent rows of its level. One projection on every direction gives its lead coefficients, its coefficients $w$ on the tail's directions, and its residual $c$; a second projection follows when the first cancelled most of $a$. $B$ holds the tail's directions plus $c / \lVert c \rVert$ when $\lVert c \rVert > \epsilon$; $C$ has the new row $(w, \lVert c \rVert)$ on top of the tail's columns of $K$ (and a zero column). $C$ is in echelon form except for its first row.
+**Insertion of row $a$** (`PriorityLQ::insert`) at $p$, after the independent rows of its level. One projection on every direction gives its lead coefficients, its coefficients $w$ on the tail's directions, and its residual $c$; a second projection follows when the first cancelled most of $a$ but left more than $\epsilon$ (§15). $B$ holds the tail's directions plus $c / \lVert c \rVert$ when $\lVert c \rVert > \epsilon$; $C$ has the new row $(w, \lVert c \rVert)$ on top of the tail's columns of $K$ (and a zero column). $C$ is in echelon form except for its first row.
 
 **Echelon form by rotations** (`PriorityLQ::rotate_tail`). Process the tail's positions in order, level by level, with a counter `next` of the first coordinate not yet taken:
 1. **Pivot** inside the level on the row with the most left on the free coordinates (downdated squared norms, recomputed when they fall below $\sqrt u$ of their start).
@@ -365,6 +365,8 @@ The rounding error in $\lVert c_i \rVert$ is about $u \max_j \lVert a_j \rVert$ 
 ### 15. Two passes
 
 One pass of Gram–Schmidt loses orthogonality in proportion to the cancellation in each row. A second pass, done when the first cancelled more than half of the row's squared norm, restores it to working precision (Daniel et al. 1976). This is what lets (5) use $\hat Q_j \hat Q_l^\top = \delta_{jl} I$.
+
+A row that the first pass leaves at or below the rank threshold gets no direction, so the second pass is skipped for it. The decision is the same: the first pass gives $\lVert c \rVert$ to within about $u \lVert a \rVert$, far below $\epsilon = \tau \max \lVert a_i \rVert$, and the second pass can only shorten $c$. Its coefficients miss a correction $Q c$ of the order of $u \lVert a \rVert$. On the benchmark families, a fifth to three fifths of the insertions are of such rows (rows of a level that conflicts, or in the span of the levels above), and their first pass always cancels most of the row.
 
 ### 16. Do not form $\bar A \bar A^\top$
 
