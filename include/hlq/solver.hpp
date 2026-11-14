@@ -166,6 +166,16 @@ public:
                 active_(i) = false;
             }
         }
+        // A last level that may be folded gets the fold's storage now, as solve() does not allocate.
+        const Index last = levels_ < 2 ? 0 : level_ends_(levels_ - 2);
+        bool foldable = rows_ - last >= cols_;
+        for (Index i = last; foldable && i < rows_; ++i) {
+            foldable = equality_(i);
+        }
+        if (foldable) {
+            fold_inv_.resize(cols_, cols_);
+            fold_reference_.resize(cols_);
+        }
         has_problem_ = true;
         scaled_valid_ = false;
         return status_;
@@ -269,17 +279,17 @@ public:
             locked_(i) = equality_(i);
             equalities_only = equalities_only && equality_(i);
         }
-        lq_.factor(factored_rows(), active_, level_ends_, noise_);
+        lq_.factor(factored_rows(), active_, level_ends_, noise_, searched_);
         changed_ = 0;
         forward();
         copy(primal_, point_);
 
-        // Phases 0 to levels - 1 solve the levels; phase `levels` chooses among their optima the point
+        // Phases 0 to searched - 1 solve the levels; phase `searched` chooses among their optima the point
         // closest to the reference, releasing the constraints that hold the step back and that no level
-        // needs.
-        for (Index h = 0; !equalities_only && changes_ < settings_.max_changes && h <= levels_; ++h) {
+        // needs. With a folded last level, that choice is the last level itself (see `fold`).
+        for (Index h = 0; !equalities_only && changes_ < settings_.max_changes && h <= searched_; ++h) {
             phase_ = h;
-            if (h < levels_) {
+            if (h < searched_) {
                 // A level left out of the factorization during an earlier phase comes back now.
                 const bool appended = lq_.factored() == h;
                 if (appended) {
@@ -310,7 +320,7 @@ public:
 
                 // Release the constraint whose multiplier has the most wrong sign.
                 lq_.multipliers(h, residual_, dual_);
-                const Index active_above = h < levels_ ? lq_.begin(h + 1) : lq_.size();
+                const Index active_above = h < searched_ ? lq_.begin(h + 1) : lq_.size();
                 // Relative: rounding noise in a multiplier scales with the largest of the subproblem.
                 Scalar largest = 0;
                 for (Index p = 0; p < active_above; ++p) {
@@ -345,9 +355,9 @@ public:
             }
         }
 
-        if (lq_.factored() < levels_) {
+        if (lq_.factored() < searched_) {
             // Stopped early: the accessors need every level.
-            while (lq_.factored() < levels_) {
+            while (lq_.factored() < searched_) {
                 const Index k = lq_.factored();
                 lq_.append(factored_rows(), active_, k == 0 ? 0 : level_ends_(k - 1), level_ends_(k), noise_);
                 changed_ = std::min(changed_, k);
@@ -381,7 +391,17 @@ public:
     /// Number of active-set changes in the last solve.
     [[nodiscard]] Index changes() const noexcept { return changes_; }
     /// Number of independent active rows of a level at the solution.
-    [[nodiscard]] Index rank(Index level) const noexcept { return lq_.rank(level); }
+    [[nodiscard]] Index rank(Index level) const noexcept {
+        if (fold_ && level == searched_) {
+            // A folded last level takes every direction that the levels above leave.
+            Index above = 0;
+            for (Index k = 0; k < searched_; ++k) {
+                above += lq_.rank(k);
+            }
+            return cols_ - above;
+        }
+        return lq_.rank(level);
+    }
     /// How a constraint stands in the active set at the solution.
     [[nodiscard]] Activity activity(Index row) const noexcept {
         if (equality_(row)) {
@@ -402,11 +422,26 @@ public:
      */
     [[nodiscard]] std::span<const Scalar> multipliers(Index level) noexcept {
         HLQ_ASSERT(level >= 0 && level <= levels_);
-        lq_.multipliers(level, residual_, dual_);
         std::fill_n(multipliers_.data(), rows_, Scalar(0));
-        const Index active_above = level < levels_ ? lq_.begin(level + 1) : lq_.size();
+        if (fold_ && level == levels_) {
+            multipliers_after_fold();
+            return span(multipliers_, rows_);
+        }
+        if (lq_.factored() > searched_) {
+            lq_.truncate(searched_ - 1);  // left there by multipliers(levels())
+        }
+        // With a folded last level, its subproblem is the choice among the optima of the levels above.
+        const Index h = std::min(level, searched_);
+        lq_.multipliers(h, residual_, dual_);
+        const Index active_above = h < searched_ ? lq_.begin(h + 1) : lq_.size();
         for (Index p = 0; p < active_above; ++p) {
             multipliers_(lq_.row(p)) = dual_(p);
+        }
+        if (fold_ && level == searched_) {
+            // Its own rows: their residuals, A x - b.
+            for (Index i = level == 0 ? 0 : level_ends_(level - 1); i < rows_; ++i) {
+                multipliers_(i) = violation_(i);
+            }
         }
         return span(multipliers_, rows_);
     }
@@ -477,22 +512,146 @@ private:
         return Status::Ready;
     }
 
+    /// The metric (as C, x = r + C z), whether it is the identity, and the reference of the search: the
+    /// user's, or those of a folded last level.
+    [[nodiscard]] const Metric& metric() const noexcept { return fold_ ? fold_inv_ : metric_inv_; }
+    [[nodiscard]] bool identity() const noexcept { return fold_ ? fold_identity_ : identity_metric_; }
+    [[nodiscard]] const ColsVector& reference() const noexcept {
+        return fold_ ? fold_reference_ : reference_;
+    }
+
     /// The rows that are factored: the rows of the problem in the coordinates of the metric.
     [[nodiscard]] detail::MatrixRef<const Scalar> factored_rows() const noexcept {
-        return (identity_metric_ ? matrix_ : scaled_).block(0, 0, rows_, cols_);
+        return (identity() ? matrix_ : scaled_).block(0, 0, rows_, cols_);
+    }
+
+    /**
+     * Whether the last level is the choice among the optima. A last level of equalities F x = b whose rows
+     * have full column rank leaves a single point, where ||F x - b||^2 = (x - r)^T F^T F (x - r) + constant,
+     * with r = F^+ b, is least among the optima of the levels above: the solver's own choice among them, with
+     * metric F^T F and reference r. That level is then not searched. With F = Q R, the metric is C = R^-1 and
+     * r = R^-1 Q^T b. Conditioning worse than 1 / sqrt(epsilon) is left to the search.
+     */
+    void fold() noexcept {
+        fold_ = false;
+        searched_ = levels_;
+        const Index begin = levels_ < 2 ? 0 : level_ends_(levels_ - 2);
+        const Index count = rows_ - begin;
+        if (!settings_.fold_final_level || levels_ == 0 || cols_ == 0 || count < cols_
+            || fold_inv_.rows() != cols_) {
+            return;
+        }
+        for (Index i = begin; i < rows_; ++i) {
+            if (!equality_(i)) {
+                return;
+            }
+        }
+        // F^T in scaled_'s storage, which is recomputed after the fold anyway, and the reflectors' tau in
+        // step_.
+        const detail::MatrixRef<Scalar> ft{scaled_.row(0), cols_, count, count};
+        for (Index j = 0; j < cols_; ++j) {
+            for (Index i = 0; i < count; ++i) {
+                ft(j, i) = matrix_(begin + i, j);
+            }
+        }
+        Scalar* tau = step_.data();
+        detail::householder_qr(ft, tau);
+        Scalar largest = 0;
+        Scalar smallest = std::numeric_limits<Scalar>::infinity();
+        bool diagonal = true;  // R, whose transpose is the lower triangle of ft
+        for (Index j = 0; j < cols_; ++j) {
+            largest = std::max(largest, std::abs(ft(j, j)));
+            smallest = std::min(smallest, std::abs(ft(j, j)));
+            for (Index i = 0; i < j; ++i) {
+                diagonal = diagonal && ft(j, i) == Scalar(0);
+            }
+        }
+        if (!(smallest > std::sqrt(std::numeric_limits<Scalar>::epsilon()) * largest)) {
+            return;
+        }
+        Scalar* rotated = values_.data();  // Q^T b
+        for (Index i = 0; i < count; ++i) {
+            rotated[i] = lower_(begin + i);
+        }
+        detail::apply_qt(ft, tau, rotated);
+        std::copy_n(rotated, cols_, fold_reference_.data());
+        detail::solve_lower_transposed(ft.block(0, 0, cols_, cols_), fold_reference_.data());
+        // C = R^-1, upper triangular: column i solves the leading block of R c = e_i. R is diagonal when the
+        // rows' columns are orthogonal, as for x = 0 or a weighted x = r.
+        fold_inv_.fill(Scalar(0));
+        fold_identity_ = diagonal;
+        for (Index i = 0; i < cols_; ++i) {
+            if (diagonal) {
+                fold_inv_(i, i) = Scalar(1) / ft(i, i);
+                fold_identity_ = fold_identity_ && ft(i, i) == Scalar(1);
+                continue;
+            }
+            Scalar* column = primal_.data();
+            std::fill_n(column, i, Scalar(0));
+            column[i] = Scalar(1);
+            detail::solve_lower_transposed(ft.block(0, 0, i + 1, i + 1), column);
+            for (Index j = 0; j <= i; ++j) {
+                fold_inv_(j, i) = column[j];
+            }
+        }
+        fold_ = true;
+        searched_ = levels_ - 1;
+    }
+
+    /// Multipliers of the user's choice among the optima, 1/2 (x - r)^T W (x - r), after a folded last level:
+    /// that level joins the factorization, and the gradient is taken to its coordinates z, x = r_f + C_f z.
+    void multipliers_after_fold() noexcept {
+        if (lq_.factored() == searched_) {
+            lq_.append(factored_rows(), active_, searched_ == 0 ? 0 : level_ends_(searched_ - 1), rows_,
+                       noise_);
+            changed_ = std::min(changed_, searched_);
+            forward();  // for the QR of the last level; the solution stays
+        }
+        Scalar* g = step_.data();  // free after the solve, as is primal_
+        for (Index j = 0; j < cols_; ++j) {
+            g[j] = solution_(j) - reference_(j);
+        }
+        if (!identity_metric_) {
+            // W g = U^T U g with C = U^-1 upper triangular: solve C y = g, then C^T w = y.
+            for (Index i = cols_ - 1; i >= 0; --i) {
+                g[i] = (g[i] - detail::dot(metric_inv_.row(i) + i + 1, g + i + 1, cols_ - i - 1))
+                       / metric_inv_(i, i);
+            }
+            for (Index i = 0; i < cols_; ++i) {
+                for (Index j = 0; j < i; ++j) {
+                    g[i] -= metric_inv_(j, i) * g[j];
+                }
+                g[i] /= metric_inv_(i, i);
+            }
+        }
+        Scalar* z = primal_.data();
+        if (fold_identity_) {
+            std::copy_n(g, cols_, z);
+        } else {
+            std::fill_n(z, cols_, Scalar(0));
+            detail::multiply_transposed_add(Scalar(1), fold_inv_.view(), g, z);
+        }
+        lq_.multipliers_of(z, dual_);
+        for (Index p = 0; p < lq_.size(); ++p) {
+            multipliers_(lq_.row(p)) = dual_(p);
+        }
     }
 
     /// Rows in the coordinates of the metric, and the rank threshold of each level.
     void prepare_rows() noexcept {
-        if (!scaled_valid_ && !identity_metric_) {
-            for (Index i = 0; i < rows_; ++i) {
-                std::fill_n(scaled_.row(i), cols_, Scalar(0));
-                detail::multiply_transposed_add(Scalar(1), metric_inv_.view(), matrix_.row(i),
-                                                scaled_.row(i));
+        if (!scaled_valid_ || fold_setting_ != settings_.fold_final_level) {
+            fold_setting_ = settings_.fold_final_level;
+            fold();
+            if (!identity()) {
+                for (Index i = 0; i < rows_; ++i) {
+                    std::fill_n(scaled_.row(i), cols_, Scalar(0));
+                    detail::multiply_transposed_add(Scalar(1), metric().view(), matrix_.row(i),
+                                                    scaled_.row(i));
+                }
             }
+            scaled_valid_ = true;
         }
-        scaled_valid_ = true;
-        detail::multiply(matrix_.block(0, 0, rows_, cols_), reference_.data(), at_reference_.data());
+        detail::multiply(matrix_.block(0, 0, rows_, cols_), reference().data(), at_reference_.data());
         // Absolute: rounding noise scales with the longest row of a level, not with what is left of a row.
         const detail::MatrixRef<const Scalar> rows = factored_rows();
         for (Index k = 0, begin = 0; k < levels_; ++k) {
@@ -515,13 +674,13 @@ private:
         }
         lq_.solve(goal_, residual_, step_, changed_);
         changed_ = levels_;
-        if (identity_metric_) {
+        if (identity()) {
             for (Index j = 0; j < cols_; ++j) {
-                primal_(j) = reference_(j) + step_(j);
+                primal_(j) = reference()(j) + step_(j);
             }
         } else {
-            detail::multiply(metric_inv_.view(), step_.data(), primal_.data());
-            detail::axpy(Scalar(1), reference_.data(), primal_.data(), cols_);
+            detail::multiply(metric().view(), step_.data(), primal_.data());
+            detail::axpy(Scalar(1), reference().data(), primal_.data(), cols_);
         }
     }
 
@@ -576,7 +735,7 @@ private:
     Scalar ratio_test(Index h, Index& row, bool& at_lower) noexcept {
         Scalar step = 1;
         row = -1;
-        const Index end = level_ends_(std::min(h, levels_ - 1));
+        const Index end = level_ends_(std::min(h, searched_ - 1));
         detail::multiply(matrix_.block(0, 0, end, cols_), primal_.data(), values_.data());
         for (Index i = 0; i < end; ++i) {
             if (active_(i)) {
@@ -613,8 +772,12 @@ private:
     bool has_problem_ = false;
     bool scaled_valid_ = false;
     bool identity_metric_ = true;
-    Index phase_ = 0;    // level being solved, or levels_ for the choice among the optima
-    Index changed_ = 0;  // first level whose active rows changed since the last forward solve
+    bool fold_ = false;           // the last level is the choice among the optima (see `fold`)
+    bool fold_identity_ = false;  // and its metric is the identity
+    bool fold_setting_ = true;    // settings_.fold_final_level when fold_ was decided
+    Index searched_ = 0;          // levels searched: all, or all but a folded last one
+    Index phase_ = 0;             // level being solved, or levels_ for the choice among the optima
+    Index changed_ = 0;           // first level whose active rows changed since the last forward solve
     Status status_ = Status::NoProblem;
     Settings<Scalar> settings_;
     Index changes_ = 0;
@@ -645,6 +808,8 @@ private:
     ColsVector primal_;  // solution of the active set
     ColsVector point_;   // iterate of the search
     ColsVector solution_;
+    Metric fold_inv_;  // C of a folded last level
+    ColsVector fold_reference_;
 };
 
 }  // namespace hlq
