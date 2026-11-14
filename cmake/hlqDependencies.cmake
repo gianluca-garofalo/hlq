@@ -1,8 +1,9 @@
 include_guard(GLOBAL)
 include(FetchContent)
 
-# Eigen 3.4: the one dependency of the library. An installed Eigen is preferred; otherwise its release tarball is
-# downloaded and used header-only, without configuring Eigen's own project.
+# Eigen 3.4, for the tests, benchmarks and comparisons (the library itself does not use it). An installed Eigen
+# is preferred; otherwise its release tarball is downloaded and used header-only, without configuring Eigen's own
+# project.
 function(hlq_find_eigen)
     if(TARGET Eigen3::Eigen)
         return()

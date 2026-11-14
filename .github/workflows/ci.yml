@@ -28,7 +28,7 @@ jobs:
           - { name: Apple clang Release, os: macos-latest, cxx: clang++, config: Release, werror: ON }
           - { name: MSVC Release, os: windows-latest, cxx: '', config: Release, werror: OFF }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Configure
         shell: bash
         run: >
@@ -44,10 +44,7 @@ jobs:
       - name: Install and use the package
         shell: bash
         run: |
-          # Eigen was downloaded by the build: install it too, as a downstream project would find it.
-          cmake -S build/_deps/hlq_eigen-src -B build-eigen -DCMAKE_INSTALL_PREFIX="$PWD/install" \
-            -DBUILD_TESTING=OFF -DEIGEN_BUILD_DOC=OFF -DEIGEN_BUILD_PKGCONFIG=OFF
-          cmake --install build-eigen
+          # The package needs nothing else: the downstream project finds hlq alone.
           cmake --install build --config ${{ matrix.config }} --prefix "$PWD/install"
           cmake -S tests/package -B build-package -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
             -DCMAKE_PREFIX_PATH="$PWD/install" \
@@ -60,7 +57,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Configure
         run: >
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DHLQ_WARNINGS_AS_ERRORS=ON
@@ -77,7 +74,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the formatting
         run: |
           git ls-files '*.hpp' '*.cpp' | xargs clang-format-18 --dry-run --Werror
@@ -92,8 +89,8 @@ jobs:
         os: [ubuntu-24.04, macos-latest, windows-latest]
         python: ['3.9', '3.13']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Install

@@ -30,6 +30,9 @@ struct Settings {
     Scalar dual_tolerance = default_tolerance<Scalar>();
     /// Maximum number of active-set changes (activations plus deactivations) in one solve.
     int max_changes = 500;
+    /// Take a last level of equalities with full column rank, such as x = 0, as the choice among the optima
+    /// of the levels above instead of searching it: the same solution, at no cost.
+    bool fold_final_level = true;
 };
 
 }  // namespace hlq

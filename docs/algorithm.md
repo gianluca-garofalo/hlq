@@ -194,7 +194,9 @@ Hence:
 
 which lies in $\mathcal R(F_k)$, spanned by the first $r_k$ columns of $H_k$. When $s_k = 0$, $\lambda_k = -(K_k^a)^{-\top} \theta_k$.
 
-**The final choice among the optima.** After the last level, the solution minimizes $\tfrac12 \lVert \tilde x - \tilde x^{(0)} \rVert^2$ (metric coordinates) over $S_m$. That is one more subproblem, whose gradient is the step $\hat Q^\top y$ itself, and every level is above it: its multipliers are (12) started from $\theta = y$ and run from $k = m$ down (`PriorityLQ::multipliers` with `h == levels`).
+**The final choice among the optima.** After the last level, the solution minimizes $\tfrac12 \lVert \tilde x - \tilde x^{(0)} \rVert^2$ (metric coordinates) over $S_m$. That is one more subproblem, whose gradient is the step $\hat Q^\top y$ itself, and every level is above it: its multipliers are (12) started from $\theta = y$ and run from $k = m$ down (`PriorityLQ::multipliers` with `h` the number of levels factored).
+
+**A last level that is the final choice.** If level $m$ consists of equalities $F x = b$ and $F$ has full column rank, it leaves a single point: on $S_{m-1}$ it minimizes $\lVert F x - b \rVert^2 = (x - r)^\top F^\top F (x - r) + c$, with $r = F^+ b$ and $c$ a constant. That is the final choice among the optima of levels $1, \dots, m-1$ in the metric $W = F^\top F$ with reference $r$, so hlq does not search the level: with $F = Q R$ it takes $C = R^{-1}$ and $r = R^{-1} Q^\top b$ (`Solver::fold`). A regularization such as $x = 0$ then costs nothing. The level is reported as if it had been searched. Its cost is computed from the solution, and its rank is $n$ minus the ranks above. In its subproblem the gradient $F^\top (F x - b) = W (x - r)$ is that of the final choice, so the multipliers of the levels above are the final choice's, and those of its own rows are their residuals. A level conditioned worse than $1 / \sqrt{\epsilon}$ is searched instead, and `Settings::fold_final_level` turns the fold off.
 
 ### 7. Example 1 (equalities, a conflict, a dependent row)
 
@@ -247,26 +249,27 @@ over the optimal set of the levels above it, as in (1).
 
 **Working set.** $W$ is a set of rows, each with a side $`\sigma_i \in \{+1, -1\}`$ (upper or lower bound) and target $\beta_i = u_i$ or $l_i$. Equality rows are always in $W$. For fixed $W$, the problem "make the rows of $W$ equal to their targets, level by level" is Part I. Write $\bar x(W)$ for its solution.
 
-**Locked rows.** These are rows of $W$ that may no longer be removed. Equality rows are locked from the start.
+**Locked rows.** These are rows of $W$ that may no longer be removed. Equality rows are locked from the start. A row can also be locked for one phase only (§9, step 2).
 
 ### 9. The active-set loop
 
 $\hat x$ is the iterate (`Solver::point_`) and $\bar x$ the solution of the current working set (`Solver::primal_`). Tolerances: $\tau_f$ is `feasibility_tolerance` (absolute), $\tau_d$ is `dual_tolerance`, relative: a multiplier of subproblem $h$ counts as nonzero above $z_h := \tau_d (1 + \max_i \lvert \lambda_i \rvert)$, since its rounding noise scales with the largest multiplier of the subproblem.
 
-0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$.
+0. **Start.** $W$ holds the equalities plus the warm start (the active set of the previous solve, when the problem's structure is unchanged). Factor (§3), solve (§5), and set $\hat x \leftarrow \bar x$. The factorization of the previous solve's final $W$ is kept: when neither the rows, the metric nor $W$ changed since (only the bounds or the reference did), it is reused instead of factored again.
 1. **For $h = 1, \dots, m + 1$:** phase $m + 1$ is the final choice among the optima (§6).
    1. **Activate violated rows** (levels only). If level $h$ left the factorization in an earlier phase, factor its rows of $W$ after the levels above it (§3, one level). Insert (§12) every inactive row $i$ of level $h$ with $a_i \hat x > u_i + \tau_f$ (side $+1$) or $a_i \hat x < l_i - \tau_f$ (side $-1$).
    2. **Ratio test.** Solve for $\bar x$. Among the inactive rows of levels $\le h$ (every level, in the last phase) with $a_i \bar x$ outside $[l_i - \tau_f, u_i + \tau_f]$, take the smallest step to the violated bound $\beta_i$:
 
       $$t_i = \mathrm{clamp}\Big(\frac{\beta_i - a_i \hat x}{a_i \bar x - a_i \hat x}, 0, 1\Big) \tag{15}$$
 
-      The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2.
+      The denominator is nonzero because $\hat x$ satisfies these rows. If such a row exists, set $\hat x \leftarrow \hat x + t_i (\bar x - \hat x)$, insert row $i$ at that bound, and repeat step 2. If row $i$ is the row the last change removed and $\hat x$ moved by at most $\tau_f$ in every coordinate, the insertion undoes that removal; the second time this happens to a row in phase $h$, lock it until the end of the phase.
    3. **Drop test.** Set $\hat x \leftarrow \bar x$ and compute the multipliers of subproblem $h$ (§6). For a level's own rows these are its residuals, $\lambda_i = \rho_i$. Let $i$ be the unlocked row of $W$ in levels $\le h$ that maximizes $-\sigma_i \lambda_i$. If $-\sigma_i \lambda_i > z_h$, remove it (§12) and go back to step 2.
    4. **Lock.** Lock every row of $W$ in levels $\le h$ with $\sigma_i \lambda_i > z_h$, then go to the next $h$.
 2. **Return $\hat x$**, with `Status::Solved`, or `Status::MaxChanges` once `max_changes` insertions plus removals are spent.
 
 **Why each rule:**
 - **Ratio test.** $\hat x$ satisfies every inactive row of the levels already processed, so the levels above $h$ never get worse. Jumping straight to $\bar x$ can violate rows that earlier phases satisfied; that breaks solved levels and cycles.
+- **Cycle guard.** A removal that the ratio test undoes at once leaves $W$ and $\hat x$ as they were, so the drop test removes the same row again. Once can be a degenerate step; twice in a phase is a cycle. In the cases seen, the levels above $h$ are ill-conditioned: removing the row lets $\bar x$ improve a level above $h$ by an amount below the tolerances, which the row's own bound forbids. The row's multiplier is then not a usable sign, and the lock stops the search there, as `max_changes` would, but at once.
 - **Sign test.** Take a row at its upper bound in subproblem (9), with the inequality $a_i x \le u_i$ in the Lagrangian as $\mu_i (a_i x - u_i)$, $\mu_i \ge 0$. Then $\mu_i = \lambda_i$, so the condition is $\sigma_i \lambda_i \ge 0$; the lower side is symmetric. For a row of level $h$, $\sigma_i \rho_i \ge 0$ says the row is on, or beyond, its bound on the side it is active for.
 - **Locking.** If $\sigma_i \lambda_i > z_h$ at level $h$, moving the row off its bound strictly increases $f_h$, so it must stay there for all lower levels. If $\lvert \lambda_i \rvert \le z_h$, level $h$ does not care, and a lower level may still release the row (Example 2). A threshold that does not scale with the multipliers locks rounding noise: in single precision, a multiplier that is $10^{-5}$ only because the others are $10^2$ would lock a bound that a lower level must release.
 - **The last phase.** The working set's solution is the point closest to the reference within the affine set of its active rows, but the optimal set may be larger: an inactive-at-every-level constraint (zero multipliers everywhere) may hold the solution away from the reference. Phase $m + 1$ releases those, with the same ratio test.
@@ -336,7 +339,7 @@ Both updates express the rows after the change, the **tail**, in coordinates: on
 
 The structure keeps this cheap: after a removal each row has one coordinate to absorb (one rotation); after an insertion the new row needs up to $\dim B - 1$ rotations and every later row one or two. Each rotation costs $O(t + n)$ for $t$ tail rows, so an update costs $`O(n\, r_{\text{lead}})`$ for the projection plus $`O(\dim B\,(t + n))`$ for the rotations. Coordinates that no row takes are directions the tail no longer needs. A tail row whose new entry exceeds $\epsilon$ becomes independent; when an insertion takes a direction a lower level was using, the step-3 test decides which tail row loses it.
 
-**Pivoting.** Rows keep their order inside a level except as step 1 reorders the tail; a full factorization happens at every solve (step 0 of §9), so any drift in the pivot order is limited to one solve.
+**Pivoting and drift.** Rows keep their order inside a level except as step 1 reorders the tail. A factorization reused across solves (step 0 of §9) is only ever updated, by orthogonal rotations and re-orthogonalized insertions: after 20,000 warm solves in a row, with the bounds moving, the solutions agree with fresh factorizations to $10^{-14}$, and `tests/test_reuse.cpp` checks 2,000.
 
 ## Part IV — Cost and numerics
 
@@ -350,7 +353,7 @@ For $M$ active rows of rank $r$ in $n$ variables, a change at position $p$ with 
 | insertion or removal (§12) | $`O(n\, r + \dim B\,(t + n))`$ |
 | solution of the working set (§5) | $O(M r + n r)$, plus a QR of each conflicting level, from the level of the change on |
 | multipliers of a subproblem (§6) | $O(M r)$, reusing those QRs |
-| ratio test (15) | $O(m n)$ over the inactive rows of the levels involved |
+| ratio test (15) | $O(n)$ per inactive row of the levels involved, $O(1)$ for a bound on one variable |
 | storage | $O(M^2 + M n)$, allocated once by the constructor |
 
 Measured on the families of §18 (see the README for the full table), cold solves from data to solution take about a quarter of the time of HierarchicalQP and LexLS on the large family (20–40 variables), and about the same on small problems. DAQP, a dual method, is faster still, at an accuracy of about $10^{-6}$: hlq makes fewer active-set changes, but each one costs more, since it keeps $\hat Q$ (vectors of length $n$) where DAQP keeps only the LDL factors of the Gram matrix (§4).
@@ -387,10 +390,10 @@ The tests (`tests/`) check the implementation in three independent ways:
 - **With an optimality certificate** (`tests/support/certificate.hpp`), independent of the solver: at every level, the gradient of its squared violation must be balanced by multipliers of the bounds tight above it with the sign their side allows, found by non-negative least squares (Lawson and Hanson); and the final choice must be balanced the same way. Random, integer, degenerate (many parallel rows) and large problems, cold, warm, from another problem's active set, in a metric, and without a final regularization level. A test checks that the certificate rejects perturbed solutions.
 - **Against other solvers** (`benchmarks/compare.cpp`): level by level against LexLS, HierarchicalQP and DAQP, pinned; hlq is never worse on well-conditioned families, and on ill-conditioned ones it is better more often than not.
 
-The no-allocation guarantee is checked with Eigen's `EIGEN_RUNTIME_NO_MALLOC`. CI runs everything with gcc, clang and MSVC, and under the address and undefined-behaviour sanitizers.
+The no-allocation guarantee is checked by a test that counts the calls to a replaced global `operator new`. CI runs everything with gcc, clang and MSVC, and under the address and undefined-behaviour sanitizers.
 
 **Known limits.**
-- On degenerate, ill-conditioned problems the active-set search can cycle until `max_changes` (about 1 in 2000 of the degenerate ill-conditioned family); the solver then returns `Status::MaxChanges` with a point that satisfies the levels it finished.
+- On ill-conditioned problems, a level can be decided by differences below the tolerances, and the levels below it then end short of the certificate's optimum: 8 of 40,000 problems of the integer and degenerate ill-conditioned families. The cycle guard of §9 ends the search on such problems, which would otherwise cycle until `max_changes`.
 - In single precision, decisions within `feasibility_tolerance` ($10^{-5}$) of a bound can change lower levels of badly balanced problems.
 
 ### References

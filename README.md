@@ -11,8 +11,8 @@ hlq keeps all active rows of all levels in one Gram–Schmidt factorization take
 
 - **Exact.** Each level's least squares is solved exactly, with rank decided per level by an absolute threshold, and conflicting levels by a Householder QR rather than normal equations.
 - **Real-time friendly.** `solve()` never allocates; with compile-time capacities nothing touches the heap. Setup reports invalid input with a `Status`, and nothing throws.
-- **Warm starts.** Re-solving a problem with the same structure starts from the previous active set; re-solving the same problem needs no changes.
-- **Header-only**, depending only on Eigen 3.4. Double or single precision; Python bindings.
+- **Warm starts.** Re-solving a problem with the same structure starts from the previous active set, and when only the bounds or the reference changed, from its factorization too; re-solving the same problem needs no changes.
+- **No dependencies.** Header-only C++20 that needs only the standard library. It reads Eigen matrices, standard containers or raw memory, in double or single precision; Python bindings.
 - **Verified** with an independent optimality certificate on thousands of random problems, and against LexLS, DAQP and HierarchicalQP.
 
 ## Quick start
@@ -22,27 +22,30 @@ hlq keeps all active rows of all levels in one Gram–Schmidt factorization take
 ```cpp
 #include <hlq/hlq.hpp>
 
+#include <array>
 #include <limits>
 
 int main() {
     // Level 1: x1 <= 1. Level 2: x1 + x2 = 4. Level 3: x2 = 2 (cannot be met under level 2 with x1 <= 1).
-    Eigen::MatrixXd a(3, 2);
-    a << 1, 0,
-         1, 1,
-         0, 1;
+    const std::array<double, 6> a = {1, 0,
+                                     1, 1,
+                                     0, 1};  // row major
     const double inf = std::numeric_limits<double>::infinity();
-    Eigen::Vector3d lower(-inf, 4, 2), upper(1, 4, 2);
-    Eigen::Vector3i level_ends(1, 2, 3);  // level k is rows [level_ends(k-1), level_ends(k))
+    const std::array<double, 3> lower = {-inf, 4, 2};
+    const std::array<double, 3> upper = {1, 4, 2};
 
     hlq::Solver<> solver(/*max_rows=*/3, /*cols=*/2);
-    if (solver.set_problem(a, lower, upper, level_ends) != hlq::Status::Ready) {
+    // Level k is rows [level_ends[k-1], level_ends[k]).
+    if (solver.set_problem(hlq::MatrixView(a.data(), 3, 2), lower, upper, {1, 2, 3}) != hlq::Status::Ready) {
         return 1;
     }
     if (solver.solve() == hlq::Status::Solved) {
-        // solver.solution() == (1, 3); solver.level_cost(2) == 1
+        // solver.solution() is {1, 3}; solver.level_cost(2) == 1
     }
 }
 ```
+
+Eigen matrices and vectors can be passed as they are, as in `solver.set_problem(A, lower, upper, level_ends)`. `#include <hlq/eigen.hpp>` for `hlq::as_eigen(solver.solution())`, an Eigen view of a result.
 
 ### Python
 
@@ -83,7 +86,7 @@ FetchContent_MakeAvailable(hlq)
 target_link_libraries(your_target PRIVATE hlq::hlq)
 ```
 
-An installed Eigen 3.4 is used when found; otherwise (with `HLQ_FETCH_DEPENDENCIES=ON`, the default) its release tarball is downloaded.
+The library needs nothing else. The tests, benchmarks and comparisons use Eigen 3.4: an installed one when found, otherwise (with `HLQ_FETCH_DEPENDENCIES=ON`, the default) its release tarball is downloaded.
 
 | Option | Default | |
 |---|---|---|
@@ -105,25 +108,25 @@ builds the module with scikit-build-core and nanobind (Python 3.9 and later; one
 ## Using the solver
 
 ```cpp
-template <typename Scalar = double, int MaxRows = Eigen::Dynamic, int MaxCols = Eigen::Dynamic,
-          int MaxLevels = Eigen::Dynamic>
+template <typename Scalar = double, int MaxRows = hlq::dynamic, int MaxCols = hlq::dynamic,
+          int MaxLevels = hlq::dynamic>
 class hlq::Solver;
 ```
 
 | Call | |
 |---|---|
 | `Solver(max_rows, cols)` | allocates for up to `max_rows` constraints in `cols` variables (`Solver()` with compile-time capacities) |
-| `set_problem(A, lower, upper, level_ends)` | any Eigen expressions; returns `Status::Ready` or why the input was rejected; keeps the active set when the structure is unchanged |
+| `set_problem(A, lower, upper, level_ends)` | copies a matrix with `rows()`, `cols()` and `A(i, j)` (Eigen, `hlq::MatrixView`) and vectors with `size()` and `v[i]` (Eigen, `std::vector`, `std::span`); returns `Status::Ready` or why the input was rejected; keeps the active set when the structure is unchanged |
 | `set_metric(W)`, `set_reference(r)` | the solution minimizes $(x - r)^\top W (x - r)$ among the optima |
 | `solve()` | `Status::Solved`, or `Status::MaxChanges` when the search stopped early |
-| `solution()`, `violation()`, `level_cost(k)` | the point, $A x$ minus its clamp to the bounds, and each level's squared violation |
+| `solution()`, `violation()`, `level_cost(k)` | the point, $A x$ minus its clamp to the bounds (both `std::span`s into the solver), and each level's squared violation |
 | `activity(i)`, `rank(k)`, `multipliers(k)` | the active set, the rank of each level, the multipliers of each level's subproblem |
-| `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes` |
+| `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes`, `fold_final_level` |
 | `reset()` | forgets the active set |
 
 The defaults suit data of order one: tolerances of $10^{-9}$ in double and $10^{-5}$ in float. The rank tolerance is relative to the longest row of each level, and the dual tolerance to the largest multiplier of each subproblem.
 
-A final regularization level such as $x = 0$ is not needed: hlq's own choice among the optima (the minimum norm, or the closest point to the reference) gives the same solution, faster.
+A final regularization level such as $x = 0$ costs nothing. hlq takes any last level of equalities with full column rank ($x = 0$, $x = x_{\text{prev}}$, a weighted one) as its own choice among the optima instead of searching it, with the same solution, costs, ranks and multipliers; `settings().fold_final_level = false` searches it like any other level.
 
 ## Verification and performance
 
@@ -138,15 +141,17 @@ A final regularization level such as $x = 0$ is not needed: hlq's own choice amo
 | random with an ill-conditioned level | 32 / 0 | 8 / 0 | 0 / 0 |
 | degenerate with an ill-conditioned level | 5 / 0 | 0 / 0 | |
 
-Cold solves from data to solution (setup included), median of 5 runs, on a 2.1 GHz x86-64 VM:
+Cold solves from data to solution (setup included), median of 5 runs, on one core of a 2.1 GHz x86-64 VM (DAQP through its C API):
 
 | Family | hlq | hlq without the final $x = 0$ level | HierarchicalQP | LexLS | DAQP |
 |---|---|---|---|---|---|
-| random (2–8 variables) | 18 µs | 12 µs | 21 µs | 23 µs | 6 µs |
-| degenerate (3 variables) | 6 µs | | 7 µs | 8 µs | 3 µs |
-| large (20–40 variables) | 196 µs | 107 µs | 765 µs | 703 µs | 56 µs |
+| random (2–8 variables) | 8.5 µs | 7.9 µs | 17 µs | 21 µs | 4.3 µs |
+| degenerate (3 variables) | 3.1 µs | | 5.5 µs | 7.8 µs | 2.7 µs |
+| large (20–40 variables) | 93 µs | 78 µs | 665 µs | 571 µs | 55 µs |
 
-DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and seven times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
+DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: six to seven times as fast as HierarchicalQP and LexLS on the large family. The final $x = 0$ level of these problems costs it little, since it is taken as hlq's own choice among the optima.
+
+Warm re-solves, by a solver set up once and solved again after the bounds move by 1% (as in a control loop), take hlq 1.9 µs on the random family and 25 µs on the large one, against 2.9 µs and 47 µs for DAQP warm-started: hlq then keeps its factorization, and DAQP updates its own. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
 
 CI reruns both on every pull request (see the Comparisons workflow's summary). Known limits are listed at the end of [docs/algorithm.md](docs/algorithm.md).
 

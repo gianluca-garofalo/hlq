@@ -8,16 +8,10 @@
 #include <limits>
 #include <utility>
 
-#include <Eigen/Dense>
-
-#include <hlq/detail/householder.hpp>
+#include <hlq/detail/dense.hpp>
+#include <hlq/types.hpp>
 
 namespace hlq::detail {
-
-/// A compile-time capacity plus `extra`, or `Eigen::Dynamic`.
-constexpr int grow(int capacity, int extra) noexcept {
-    return capacity == Eigen::Dynamic ? Eigen::Dynamic : capacity + extra;
-}
 
 /**
  * Factorization A_W = K Q of the active rows of a problem, in priority order.
@@ -38,16 +32,14 @@ constexpr int grow(int capacity, int extra) noexcept {
 template <typename Scalar, int MaxRows, int MaxCols, int MaxLevels>
 class PriorityLQ {
 public:
-    using Index = Eigen::Index;
-    /// Rows of the problem (or of Q), row major.
-    using RowMatrix =
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, MaxRows, MaxCols>;
+    /// Rows of the problem, row major.
+    using Rows = MatrixRef<const Scalar>;
     /// Vector over rows or positions.
-    using RowsVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, MaxRows, 1>;
+    using RowsVector = Vector<Scalar, MaxRows>;
     /// Vector over columns.
-    using ColsVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, MaxCols, 1>;
+    using ColsVector = Vector<Scalar, MaxCols>;
     /// Vector over levels.
-    using LevelsVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, MaxLevels, 1>;
+    using LevelsVector = Vector<Scalar, MaxLevels>;
 
     PriorityLQ(Index max_rows, Index cols)
         : cols_(cols),
@@ -68,10 +60,10 @@ public:
           coords_(max_rows),
           theta_(max_rows),
           fresh_(cols) {
-        coefs_.setZero();
+        coefs_.fill(Scalar(0));
     }
 
-    /// Sizes the arrays over levels (allocating only when the number of levels changes).
+    /// Sizes the arrays over levels (allocating only when there are more levels than before).
     void prepare(Index levels) {
         levels_ = levels;
         begin_.resize(levels + 1);
@@ -90,9 +82,13 @@ public:
     /// Number of independent rows of a level.
     [[nodiscard]] Index rank(Index level) const noexcept { return rank_(level); }
     /// K, by position.
-    [[nodiscard]] auto coefficients() const noexcept { return coefs_.topLeftCorner(size_, size_); }
+    [[nodiscard]] MatrixRef<const Scalar> coefficients() const noexcept {
+        return coefs_.block(0, 0, size_, size_);
+    }
     /// Q, by position.
-    [[nodiscard]] auto basis() const noexcept { return basis_.topRows(size_); }
+    [[nodiscard]] MatrixRef<const Scalar> basis() const noexcept { return basis_.block(0, 0, size_, cols_); }
+    /// Number of levels in the factorization: the first ones; the active rows of the others are left out.
+    [[nodiscard]] Index factored() const noexcept { return factored_; }
 
     /**
      * Factors the active rows from scratch by Gram-Schmidt in priority order.
@@ -102,9 +98,11 @@ public:
      * @param level_end end of each level in `rows`
      * @param noise     rank threshold of each level: absolute, compared with what a row has outside the rows
      *                  before it
+     * @param count     number of levels to factor, the first ones (all by default); `append` adds the others
      */
-    template <typename Rows, typename Active, typename Ends>
-    void factor(const Rows& rows, const Active& active, const Ends& level_end, const LevelsVector& noise) {
+    template <typename Active, typename Ends>
+    void factor(Rows rows, const Active& active, const Ends& level_end, const LevelsVector& noise,
+                Index count = -1) {
         size_ = 0;
         factored_ = 0;
         for (Index k = 0, i = 0; k < levels_; ++k) {
@@ -115,14 +113,12 @@ public:
             }
         }
         begin_(levels_) = 0;
-        for (Index k = 0, i = 0; k < levels_; ++k) {
+        count = count < 0 ? levels_ : count;
+        for (Index k = 0, i = 0; k < count; ++k) {
             append(rows, active, i, static_cast<Index>(level_end(k)), noise);
             i = static_cast<Index>(level_end(k));
         }
     }
-
-    /// Number of levels in the factorization: the first ones; the active rows of the others are left out.
-    [[nodiscard]] Index factored() const noexcept { return factored_; }
 
     /// Leaves the levels after `level` out of the factorization, at no cost; `append` brings them back.
     void truncate(Index level) noexcept {
@@ -142,8 +138,8 @@ public:
      * Factors the active rows of the next level, problem rows `[first, last)`, after the levels in the
      * factorization, by Gram-Schmidt with pivoting.
      */
-    template <typename Rows, typename Active>
-    void append(const Rows& rows, const Active& active, Index first, Index last, const LevelsVector& noise) {
+    template <typename Active>
+    void append(Rows rows, const Active& active, Index first, Index last, const LevelsVector& noise) {
         const Index k = factored_++;
         const Index begin = size_;
         begin_(k) = begin;
@@ -156,61 +152,68 @@ public:
             begin_(j) = size_;
         }
         const Index count = size_ - begin;
-        auto level = rows_.block(begin, 0, count, cols_);
-        for (Index p = begin; p < size_; ++p) {
-            level.row(p - begin) = rows.row(row_(p));
+        const MatrixRef<Scalar> level = rows_.block(begin, 0, count, cols_);
+        for (Index j = 0; j < count; ++j) {
+            std::copy_n(rows.row(row_(begin + j)), cols_, level.row(j));
+            std::fill_n(coefs_.row(begin + j), size_, Scalar(0));
+            entry_(begin + j) = squared_norm(level.row(j), cols_);
         }
-        coefs_.block(begin, 0, count, size_).setZero();
-        entry_.segment(begin, count) = level.rowwise().squaredNorm();
         if (count > 0) {
             // First pass: coefficients on the directions of the levels above.
-            if (begin > 0) {
-                coefs_.block(begin, 0, count, begin).noalias() = level * basis_.topRows(begin).transpose();
-                level.noalias() -= coefs_.block(begin, 0, count, begin) * basis_.topRows(begin);
+            for (Index j = 0; j < count && begin > 0; ++j) {
+                Scalar* coef = coefs_.row(begin + j);
+                multiply(basis_.block(0, 0, begin, cols_), level.row(j), coef);
+                multiply_transposed_add(Scalar(-1), basis_.block(0, 0, begin, cols_), coef, level.row(j));
             }
-            auto norms = norms_.head(count);
-            norms = level.rowwise().squaredNorm();
-            const Scalar exact = recompute_below() * norms.maxCoeff();
+            Scalar* norms = norms_.data();
+            for (Index j = 0; j < count; ++j) {
+                norms[j] = squared_norm(level.row(j), cols_);
+            }
+            const Scalar exact = recompute_below() * max_of(norms, count);
 
             for (Index j = 0; j < count; ++j) {
                 const Index p = begin + j;
                 // Pivot on the largest residual of the level. Downdated norms lose their accuracy as the
                 // residuals vanish, so they are recomputed there.
-                Index best = 0;
-                if (norms.tail(count - j).maxCoeff(&best) < exact) {
-                    norms.tail(count - j) = level.bottomRows(count - j).rowwise().squaredNorm();
-                    norms.tail(count - j).maxCoeff(&best);
+                Index best = argmax(norms + j, count - j);
+                if (norms[j + best] < exact) {
+                    for (Index l = j; l < count; ++l) {
+                        norms[l] = squared_norm(level.row(l), cols_);
+                    }
+                    best = argmax(norms + j, count - j);
                 }
                 if (best > 0) {
-                    level.row(j).swap(level.row(j + best));
-                    coefs_.row(p).head(p).swap(coefs_.row(p + best).head(p));
+                    std::swap_ranges(level.row(j), level.row(j) + cols_, level.row(j + best));
+                    std::swap_ranges(coefs_.row(p), coefs_.row(p) + p, coefs_.row(p + best));
                     swap_positions(p, p + best);
-                    std::swap(norms(j), norms(j + best));
+                    std::swap(norms[j], norms[j + best]);
                     std::swap(entry_(p), entry_(p + best));
                 }
 
                 // A second pass keeps Q orthonormal to working precision. It is only needed when the
                 // first one cancelled most of the row (Daniel, Gragg, Kaufman and Stewart, 1976).
-                if (p > 0 && level.row(j).squaredNorm() < Scalar(0.5) * entry_(p)) {
-                    scratch_.head(p).noalias() = basis_.topRows(p) * level.row(j).transpose();
-                    coefs_.row(p).head(p) += scratch_.head(p).transpose();
-                    level.row(j).noalias() -= scratch_.head(p).transpose() * basis_.topRows(p);
+                if (p > 0 && squared_norm(level.row(j), cols_) < Scalar(0.5) * entry_(p)) {
+                    Scalar* again = scratch_.data();
+                    multiply(basis_.block(0, 0, p, cols_), level.row(j), again);
+                    axpy(Scalar(1), again, coefs_.row(p), p);
+                    multiply_transposed_add(Scalar(-1), basis_.block(0, 0, p, cols_), again, level.row(j));
                 }
 
-                const Scalar norm = level.row(j).norm();
-                const Index rest = count - j - 1;
+                const Scalar norm = std::sqrt(squared_norm(level.row(j), cols_));
                 if (norm > noise(k)) {
                     coefs_(p, p) = norm;
-                    basis_.row(p) = level.row(j) / norm;
-                    if (rest > 0) {
-                        coefs_.block(p + 1, p, rest, 1).noalias() =
-                            level.middleRows(j + 1, rest) * basis_.row(p).transpose();
-                        level.middleRows(j + 1, rest).noalias() -=
-                            coefs_.block(p + 1, p, rest, 1) * basis_.row(p);
-                        norms.tail(rest) -= coefs_.block(p + 1, p, rest, 1).cwiseAbs2();
+                    Scalar* direction = basis_.row(p);
+                    for (Index c = 0; c < cols_; ++c) {
+                        direction[c] = level(j, c) / norm;
+                    }
+                    for (Index l = j + 1; l < count; ++l) {
+                        const Scalar on = dot(level.row(l), direction, cols_);
+                        coefs_(begin + l, p) = on;
+                        axpy(-on, direction, level.row(l), cols_);
+                        norms[l] -= on * on;
                     }
                 } else {
-                    basis_.row(p).setZero();
+                    std::fill_n(basis_.row(p), cols_, Scalar(0));
                 }
             }
         }
@@ -224,44 +227,54 @@ public:
      * pass, or two when the first cancels most of the row; the positions after it keep their coefficients on
      * the directions before it and are brought back to echelon form by Givens rotations.
      */
-    template <typename Rows>
-    void insert(const Rows& rows, Index row, Index level, const LevelsVector& noise) {
+    void insert(Rows rows, Index row, Index level, const LevelsVector& noise) {
         const Index p = begin_(level) + rank_(level);
         const Index size = size_;
         const Index tail = size - p;
+        const MatrixRef<const Scalar> basis = basis_.block(0, 0, size, cols_);
 
-        auto coef = scratch_.head(size);
-        fresh_ = rows.row(row).transpose();
-        const Scalar length = fresh_.squaredNorm();
-        coef.noalias() = basis_.topRows(size) * fresh_;
-        fresh_.noalias() -= basis_.topRows(size).transpose() * coef;
-        if (fresh_.squaredNorm() < Scalar(0.5) * length) {
+        Scalar* coef = scratch_.data();
+        Scalar* fresh = fresh_.data();
+        std::copy_n(rows.row(row), cols_, fresh);
+        const Scalar length = squared_norm(fresh, cols_);
+        multiply(basis, fresh, coef);
+        multiply_transposed_add(Scalar(-1), basis, coef, fresh);
+        if (squared_norm(fresh, cols_) < Scalar(0.5) * length) {
             // The first pass cancelled most of the row: a second one restores orthogonality.
-            auto second = second_.head(size);
-            second.noalias() = basis_.topRows(size) * fresh_;
-            coef += second;
-            fresh_.noalias() -= basis_.topRows(size).transpose() * second;
+            Scalar* second = second_.data();
+            multiply(basis, fresh, second);
+            axpy(Scalar(1), second, coef, size);
+            multiply_transposed_add(Scalar(-1), basis, second, fresh);
         }
-        const Scalar outside = fresh_.norm();
+        const Scalar outside = std::sqrt(squared_norm(fresh, cols_));
 
         // The positions from p on, in coordinates: the directions after p, plus the new one if any.
         Index dim = 0;
         for (Index j = p; j < size; ++j) {
             if (coefs_(j, j) > 0) {
-                tail_basis_.row(dim) = basis_.row(j);
-                rows_(0, dim) = coef(j);
-                rows_.col(dim).segment(1, tail) = coefs_.col(j).segment(p, tail);
+                std::copy_n(basis_.row(j), cols_, tail_basis_.row(dim));
+                rows_(0, dim) = coef[j];
+                for (Index t = 0; t < tail; ++t) {
+                    rows_(1 + t, dim) = coefs_(p + t, j);
+                }
                 ++dim;
             }
         }
         if (outside > noise(level)) {
-            tail_basis_.row(dim) = fresh_.transpose() / outside;
+            Scalar* direction = tail_basis_.row(dim);
+            for (Index c = 0; c < cols_; ++c) {
+                direction[c] = fresh[c] / outside;
+            }
             rows_(0, dim) = outside;
-            rows_.col(dim).segment(1, tail).setZero();
+            for (Index t = 0; t < tail; ++t) {
+                rows_(1 + t, dim) = Scalar(0);
+            }
             ++dim;
         }
-        tail_lead_.block(1, 0, tail, p) = coefs_.block(p, 0, tail, p);
-        tail_lead_.row(0).head(p) = coef.head(p).transpose();
+        for (Index t = 0; t < tail; ++t) {
+            std::copy_n(coefs_.row(p + t), p, tail_lead_.row(1 + t));
+        }
+        std::copy_n(coef, p, tail_lead_.row(0));
 
         for (Index j = size; j > p; --j) {
             place(j, row_(j - 1));
@@ -272,7 +285,9 @@ public:
         for (Index k = level + 1; k <= levels_; ++k) {
             ++begin_(k);
         }
-        coefs_.block(p, 0, tail + 1, p) = tail_lead_.topLeftCorner(tail + 1, p);
+        for (Index t = 0; t <= tail; ++t) {
+            std::copy_n(tail_lead_.row(t), p, coefs_.row(p + t));
+        }
         rotate_tail(p, dim, noise);
     }
 
@@ -287,12 +302,16 @@ public:
         Index dim = 0;
         for (Index j = p; j < size; ++j) {
             if (coefs_(j, j) > 0) {
-                tail_basis_.row(dim) = basis_.row(j);
-                rows_.col(dim).head(tail) = coefs_.col(j).segment(p + 1, tail);
+                std::copy_n(basis_.row(j), cols_, tail_basis_.row(dim));
+                for (Index t = 0; t < tail; ++t) {
+                    rows_(t, dim) = coefs_(p + 1 + t, j);
+                }
                 ++dim;
             }
         }
-        tail_lead_.topLeftCorner(tail, p) = coefs_.block(p + 1, 0, tail, p);
+        for (Index t = 0; t < tail; ++t) {
+            std::copy_n(coefs_.row(p + 1 + t), p, tail_lead_.row(t));
+        }
 
         position_(row) = -1;
         for (Index j = p; j < size - 1; ++j) {
@@ -302,7 +321,9 @@ public:
         for (Index k = level + 1; k <= levels_; ++k) {
             --begin_(k);
         }
-        coefs_.block(p, 0, tail, p) = tail_lead_.topLeftCorner(tail, p);
+        for (Index t = 0; t < tail; ++t) {
+            std::copy_n(tail_lead_.row(t), p, coefs_.row(p + t));
+        }
         rotate_tail(p, dim, noise);
     }
 
@@ -318,87 +339,104 @@ public:
      * @param from     first level that changed since the last solve
      */
     void solve(RowsVector& goal, RowsVector& residual, ColsVector& step, Index from = 0) {
-        auto coords = coords_.head(size_);
+        Scalar* coords = coords_.data();
         for (Index k = from; k < levels_; ++k) {
             const Index start = begin_(k);
             const Index dim = begin_(k + 1) - start;
             const Index rank = rank_(k);
             const Index dep = dim - rank;
-            if (rank == 0) {
-                coords.segment(start, dim).setZero();
-                level_step_.row(k).setZero();
-            }
+            Scalar* part = level_step_.row(k);
+            std::fill_n(part, cols_, Scalar(0));
             if (dim == 0) {
                 continue;
             }
-            auto g = goal.segment(start, dim);
-            if (start > 0) {
-                g.noalias() -= coefs_.block(start, 0, dim, start) * coords.head(start);
-            }
+            Scalar* g = goal.data() + start;
+            multiply<true>(coefs_.block(start, 0, dim, start), coords, g, Scalar(-1));
             if (rank == 0) {
-                residual.segment(start, dim) = -g;
+                std::fill_n(coords + start, dim, Scalar(0));
+                for (Index r = 0; r < dim; ++r) {
+                    residual(start + r) = -g[r];
+                }
                 continue;
             }
             if (dep == 0) {
-                coords.segment(start, rank) = g;
-                coefs_.block(start, start, rank, rank)
-                    .template triangularView<Eigen::Lower>()
-                    .solveInPlace(coords.segment(start, rank));
-                residual.segment(start, rank).setZero();
-                level_step_.row(k).noalias() =
-                    coords.segment(start, rank).transpose() * basis_.middleRows(start, rank);
-                continue;
+                std::copy_n(g, rank, coords + start);
+                solve_lower(coefs_.block(start, start, rank, rank), coords + start);
+                std::fill_n(residual.data() + start, rank, Scalar(0));
+            } else {
+                // A level whose rows conflict: least squares on its own columns of K, F = Q [R; 0]. The
+                // normal equations would square the conditioning of the level. The QR holds F^T.
+                const MatrixRef<Scalar> ft = qr_.block(start, start, rank, dim);
+                for (Index c = 0; c < rank; ++c) {
+                    for (Index r = 0; r < dim; ++r) {
+                        ft(c, r) = coefs_(start + r, start + c);
+                    }
+                }
+                Scalar* tau = tau_.data() + start;
+                householder_qr(ft, tau);
+                Scalar* rotated = residual.data() + start;
+                std::copy_n(g, dim, rotated);
+                apply_qt(ft, tau, rotated);
+                std::copy_n(rotated, rank, coords + start);
+                solve_lower_transposed(ft.block(0, 0, rank, rank), coords + start);
+                // Residual F y - g = Q [0; -c], with c the part of Q^T g that F cannot reach.
+                std::fill_n(rotated, rank, Scalar(0));
+                scale(Scalar(-1), rotated + rank, dep);
+                apply_q(ft, tau, rotated);
+                // The dependent positions have zero rows of Q, so their coordinates do not matter.
+                std::fill_n(coords + start + rank, dep, Scalar(0));
             }
-
-            // A level whose rows conflict: least squares on its own columns of K, F = Q [R; 0]. The normal
-            // equations would square the conditioning of the level.
-            auto f = qr_.block(start, start, dim, rank);
-            auto tau = tau_.segment(start, rank);
-            f = coefs_.block(start, start, dim, rank);
-            householder_qr(f, tau, scratch_.data());
-            auto rotated = residual.segment(start, dim);
-            rotated = g;
-            apply_qt(f, tau, rotated);
-            coords.segment(start, rank) = rotated.head(rank);
-            f.topLeftCorner(rank, rank)
-                .template triangularView<Eigen::Upper>()
-                .solveInPlace(coords.segment(start, rank));
-            // Residual F y - g = Q [0; -c], with c the part of Q^T g that F cannot reach.
-            rotated.head(rank).setZero();
-            rotated.tail(dep) = -rotated.tail(dep);
-            apply_q(f, tau, rotated);
-            // The dependent positions have zero rows of Q, so their coordinates do not matter.
-            coords.segment(start + rank, dep).setZero();
-            level_step_.row(k).noalias() =
-                coords.segment(start, rank).transpose() * basis_.middleRows(start, rank);
+            multiply_transposed_add(Scalar(1), basis_.block(start, 0, rank, cols_), coords + start, part);
         }
-        step = level_step_.colwise().sum().transpose();
+        std::fill_n(step.data(), cols_, Scalar(0));
+        for (Index k = 0; k < levels_; ++k) {
+            axpy(Scalar(1), level_step_.row(k), step.data(), cols_);
+        }
     }
 
     /**
      * Multipliers of the positions of levels <= h in the subproblem of level h: the residuals of level h, and
      * for each level above, the minimum-norm multipliers that balance what the levels below it leave.
      *
-     * `h == levels` is the final choice among the optima, the step's squared norm: its gradient is the step,
-     * whose coordinates on Q are those of the last solve, and every level is above it.
+     * `h == factored()` is the final choice among the optima, the step's squared norm: its gradient is the
+     * step, whose coordinates on Q are those of the last solve, and every level in the factorization is above
+     * it.
      *
      * Uses the residuals and coordinates of the last `solve`, with no change to the active rows since.
      */
     void multipliers(Index h, const RowsVector& residual, RowsVector& dual) {
         const Index start = begin_(h);
-        auto theta = theta_.head(start);
-        if (h == levels_) {
-            theta = coords_.head(start);
+        Scalar* theta = theta_.data();
+        if (h >= factored_) {
+            std::copy_n(coords_.data(), start, theta);
         } else {
             const Index dim = begin_(h + 1) - start;
-            dual.segment(start, dim) = residual.segment(start, dim);
+            std::copy_n(residual.data() + start, dim, dual.data() + start);
             if (start == 0) {
                 return;
             }
-            theta.noalias() = coefs_.block(start, 0, dim, start).transpose() * residual.segment(start, dim);
+            std::fill_n(theta, start, Scalar(0));
+            multiply_transposed_add(Scalar(1), coefs_.block(start, 0, dim, start), residual.data() + start,
+                                    theta);
         }
+        backward(std::min(h, factored_), theta, dual);
+    }
 
-        for (Index k = h - 1; k >= 0; --k) {
+    /**
+     * Multipliers of every position for an objective of the given gradient (in the coordinates of the rows)
+     * above all the levels in the factorization: the minimum-norm ones within each level, as `multipliers`.
+     * Uses the QRs of the last `solve`.
+     */
+    void multipliers_of(const Scalar* gradient, RowsVector& dual) {
+        Scalar* theta = theta_.data();
+        multiply(basis_.block(0, 0, size_, cols_), gradient, theta);
+        backward(factored_, theta, dual);
+    }
+
+private:
+    /// Backward substitution through the levels before `above`, from theta, the gradient's coordinates.
+    void backward(Index above, Scalar* theta, RowsVector& dual) {
+        for (Index k = above - 1; k >= 0; --k) {
             const Index first = begin_(k);
             const Index size = begin_(k + 1) - first;
             const Index rank = rank_(k);
@@ -406,34 +444,29 @@ public:
             if (size == 0) {
                 continue;
             }
-            auto lambda = dual.segment(first, size);
+            Scalar* lambda = dual.data() + first;
             if (rank == 0) {
-                lambda.setZero();
+                std::fill_n(lambda, size, Scalar(0));
                 continue;
             }
             // Minimum-norm solution of F^T lambda = -theta, which lies in the range of F.
-            lambda.head(rank) = -theta.segment(first, rank);
+            for (Index r = 0; r < rank; ++r) {
+                lambda[r] = -theta[first + r];
+            }
             if (dep == 0) {
-                coefs_.block(first, first, rank, rank)
-                    .transpose()
-                    .template triangularView<Eigen::Upper>()
-                    .solveInPlace(lambda.head(rank));
+                solve_lower_transposed(coefs_.block(first, first, rank, rank), lambda);
             } else {
-                auto f = qr_.block(first, first, size, rank);
-                f.topLeftCorner(rank, rank)
-                    .transpose()
-                    .template triangularView<Eigen::Lower>()
-                    .solveInPlace(lambda.head(rank));
-                lambda.tail(dep).setZero();
-                apply_q(f, tau_.segment(first, rank), lambda);
+                const MatrixRef<const Scalar> ft = qr_.block(first, first, rank, size);
+                solve_lower(ft.block(0, 0, rank, rank), lambda);
+                std::fill_n(lambda + rank, dep, Scalar(0));
+                apply_q(ft, tau_.data() + first, lambda);
             }
             if (first > 0) {
-                theta.head(first).noalias() += coefs_.block(first, 0, size, first).transpose() * lambda;
+                multiply_transposed_add(Scalar(1), coefs_.block(first, 0, size, first), lambda, theta);
             }
         }
     }
 
-private:
     /// Downdated squared norms are recomputed below this fraction of where they started.
     static Scalar recompute_below() noexcept { return std::sqrt(std::numeric_limits<Scalar>::epsilon()); }
 
@@ -450,8 +483,11 @@ private:
     }
 
     void count_rank(Index level) noexcept {
-        const Index begin = begin_(level);
-        rank_(level) = (coefs_.diagonal().segment(begin, begin_(level + 1) - begin).array() > 0).count();
+        Index rank = 0;
+        for (Index p = begin_(level); p < begin_(level + 1); ++p) {
+            rank += coefs_(p, p) > 0 ? 1 : 0;
+        }
+        rank_(level) = rank;
     }
 
     /**
@@ -465,11 +501,13 @@ private:
      */
     void rotate_tail(Index p, Index dim, const LevelsVector& noise) {
         const Index tail = size_ - p;
-        auto rows = rows_.topLeftCorner(tail, dim);
-        auto base = tail_basis_.topRows(dim);
-        auto left = norms_.head(tail);  // squared norm of each row on the coordinates not yet taken
-        left = rows.rowwise().squaredNorm();
-        coefs_.block(p, p, tail, tail).setZero();
+        const MatrixRef<Scalar> rows = rows_.block(0, 0, tail, dim);
+        const MatrixRef<Scalar> base = tail_basis_.block(0, 0, dim, cols_);
+        Scalar* left = norms_.data();  // squared norm of each row on the coordinates not yet taken
+        for (Index i = 0; i < tail; ++i) {
+            left[i] = squared_norm(rows.row(i), dim);
+            std::fill_n(coefs_.row(p + i) + p, tail, Scalar(0));
+        }
 
         Index next = 0;  // first coordinate not yet taken by an independent row
         for (Index k = 0; k < levels_; ++k) {
@@ -479,22 +517,22 @@ private:
             }
             const Index begin = std::max(p, begin_(k));
             const Scalar exact =
-                end > begin ? recompute_below() * left.segment(begin - p, end - begin).maxCoeff() : Scalar(0);
+                end > begin ? recompute_below() * max_of(left + begin - p, end - begin) : Scalar(0);
             for (Index pos = begin; pos < end; ++pos) {
                 const Index i = pos - p;
                 // Pivot on the row of the level with the most left on the free coordinates.
-                Index best = 0;
-                if (left.segment(i, end - pos).maxCoeff(&best) < exact) {
+                Index best = argmax(left + i, end - pos);
+                if (left[i + best] < exact) {
                     for (Index l = i; l < end - p; ++l) {
-                        left(l) = rows.row(l).tail(dim - next).squaredNorm();
+                        left[l] = squared_norm(rows.row(l) + next, dim - next);
                     }
-                    left.segment(i, end - pos).maxCoeff(&best);
+                    best = argmax(left + i, end - pos);
                 }
                 if (best > 0) {
-                    rows.row(i).swap(rows.row(i + best));
-                    coefs_.row(pos).head(pos).swap(coefs_.row(pos + best).head(pos));
+                    std::swap_ranges(rows.row(i), rows.row(i) + dim, rows.row(i + best));
+                    std::swap_ranges(coefs_.row(pos), coefs_.row(pos) + pos, coefs_.row(pos + best));
                     swap_positions(pos, pos + best);
-                    std::swap(left(i), left(i + best));
+                    std::swap(left[i], left[i + best]);
                 }
 
                 Index last = dim - 1;
@@ -505,28 +543,33 @@ private:
                     if (rows(i, c) == Scalar(0)) {
                         continue;
                     }
-                    Eigen::JacobiRotation<Scalar> rotation;
-                    rotation.makeGivens(rows(i, c - 1), rows(i, c));
-                    rows.bottomRows(tail - i).applyOnTheRight(c - 1, c, rotation);
-                    base.applyOnTheLeft(c - 1, c, rotation.transpose());
+                    const Rotation<Scalar> g = make_rotation(rows(i, c - 1), rows(i, c));
+                    rotate_strided(g, &rows(i, c - 1), &rows(i, c), tail - i, rows.stride);
+                    rotate(g, base.row(c - 1), base.row(c), cols_);
                     rows(i, c) = Scalar(0);
                 }
 
                 if (next < dim && std::abs(rows(i, next)) > noise(k)) {
                     if (rows(i, next) < Scalar(0)) {
-                        rows.col(next).tail(tail - i) *= Scalar(-1);
-                        base.row(next) *= Scalar(-1);
+                        for (Index l = i; l < tail; ++l) {
+                            rows(l, next) = -rows(l, next);
+                        }
+                        scale(Scalar(-1), base.row(next), cols_);
                     }
                     // Position pos takes coordinate next: its direction, and the coefficients below on it.
-                    basis_.row(pos) = base.row(next);
-                    coefs_.block(pos, pos, tail - i, 1) = rows.col(next).tail(tail - i);
-                    left.tail(tail - i - 1) -= rows.col(next).tail(tail - i - 1).cwiseAbs2();
+                    std::copy_n(base.row(next), cols_, basis_.row(pos));
+                    for (Index l = i; l < tail; ++l) {
+                        coefs_(p + l, pos) = rows(l, next);
+                    }
+                    for (Index l = i + 1; l < tail; ++l) {
+                        left[l] -= rows(l, next) * rows(l, next);
+                    }
                     ++next;
                 } else {
                     // Dependent: what is left of it is below the rank threshold.
-                    basis_.row(pos).setZero();
+                    std::fill_n(basis_.row(pos), cols_, Scalar(0));
                     if (next < dim) {
-                        rows.row(i).tail(dim - next).setZero();
+                        std::fill_n(rows.row(i) + next, dim - next, Scalar(0));
                     }
                 }
             }
@@ -534,38 +577,28 @@ private:
         }
     }
 
-    using Positions = Eigen::Matrix<Index, Eigen::Dynamic, 1, 0, MaxRows, 1>;
-    using LevelIndices = Eigen::Matrix<Index, Eigen::Dynamic, 1, 0, MaxLevels, 1>;
-    using LevelStarts = Eigen::Matrix<Index, Eigen::Dynamic, 1, 0, grow(MaxLevels, 1), 1>;
-    using Square = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, MaxRows, MaxRows>;
-    using ColumnSquare =
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor, MaxRows, MaxRows>;
-    using Tail = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, grow(MaxRows, 1),
-                               grow(MaxCols, 1)>;
-    using TailBasis =
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, grow(MaxCols, 1), MaxCols>;
-    using TailLead =
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, grow(MaxRows, 1), MaxRows>;
-    using TailVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1, 0, grow(MaxRows, 1), 1>;
-    using LevelRows =
-        Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor, MaxLevels, MaxCols>;
+    using Positions = Vector<Index, MaxRows>;
+    using LevelIndices = Vector<Index, MaxLevels>;
+    using LevelStarts = Vector<Index, grow(MaxLevels, 1)>;
+    using Square = Matrix<Scalar, MaxRows, MaxRows>;
+    using TailVector = Vector<Scalar, grow(MaxRows, 1)>;
 
     Index cols_;
     Index levels_ = 0;
     Index factored_ = 0;  // levels in the factorization
     Index size_ = 0;
-    Positions row_;         // problem row of each position
-    Positions position_;    // position of each problem row, or -1
-    Positions level_of_;    // level of each problem row
-    LevelStarts begin_;     // first position of each level, then the number of positions
-    LevelIndices rank_;     // independent rows of each level
-    Square coefs_;          // K
-    RowMatrix basis_;       // Q
-    Tail rows_;             // rows being factored or rotated
-    TailBasis tail_basis_;  // orthonormal coordinates of the positions after a change
-    TailLead tail_lead_;    // their coefficients on the directions before it, while positions shift
-    ColumnSquare qr_;       // Householder QR of each conflicting level, in its diagonal block
-    RowsVector tau_;        // and its coefficients
+    Positions row_;                           // problem row of each position
+    Positions position_;                      // position of each problem row, or -1
+    Positions level_of_;                      // level of each problem row
+    LevelStarts begin_;                       // first position of each level, then the number of positions
+    LevelIndices rank_;                       // independent rows of each level
+    Square coefs_;                            // K
+    Matrix<Scalar, MaxRows, MaxCols> basis_;  // Q
+    Matrix<Scalar, grow(MaxRows, 1), grow(MaxCols, 1)> rows_;  // rows being factored or rotated
+    Matrix<Scalar, grow(MaxCols, 1), MaxCols> tail_basis_;     // coordinates of the positions after a change
+    Matrix<Scalar, grow(MaxRows, 1), MaxRows> tail_lead_;  // their coefficients before it, while they shift
+    Square qr_;       // Householder QR of each conflicting level, transposed, in its diagonal block
+    RowsVector tau_;  // and its coefficients
     TailVector norms_;
     TailVector entry_;
     RowsVector scratch_;
@@ -573,7 +606,7 @@ private:
     RowsVector coords_;
     RowsVector theta_;
     ColsVector fresh_;
-    LevelRows level_step_;  // each level's part of the step of the last solve
+    Matrix<Scalar, MaxLevels, MaxCols> level_step_;  // each level's part of the step of the last solve
 };
 
 }  // namespace hlq::detail

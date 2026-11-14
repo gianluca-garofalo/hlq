@@ -23,18 +23,18 @@ option(HLQ_INSTALL "Generate the install rules" ${PROJECT_IS_TOP_LEVEL})
 include(GNUInstallDirs)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(hlqDependencies)
-hlq_find_eigen()
 
+# The library needs only the C++20 standard library. Its tests, benchmarks and comparisons use Eigen.
 add_library(hlq INTERFACE)
 add_library(hlq::hlq ALIAS hlq)
 target_include_directories(hlq INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(hlq INTERFACE Eigen3::Eigen)
 target_compile_features(hlq INTERFACE cxx_std_20)
 
 if(HLQ_BUILD_TESTS OR HLQ_BUILD_BENCHMARKS OR HLQ_BUILD_COMPARISONS)
     include(hlqWarnings)
+    hlq_find_eigen()
 endif()
 
 if(HLQ_BUILD_TESTS)
