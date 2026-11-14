@@ -80,13 +80,25 @@ TEST(Gram, MatchesTheDefaultInAMetric) {
 }
 
 TEST(Gram, RanksStopAtTheColumns) {
-    // Its first three levels have rank 6, every column. What the next row has outside them, computed from
-    // inner products, is rounding noise above the rank threshold: it must not count.
-    const Problem p = hlq::test::make_problem(Family::Random, 123);
-    ASSERT_EQ(p.cols(), 6);
-    const Outcome gram = solve(p, true);
-    ASSERT_EQ(gram.status, Status::Solved);
-    EXPECT_EQ(gram.ranks, (std::vector<Index>{2, 3, 1, 0, 0, 0}));
+    // Level 0 has rank 4, every column: rows (1, t, t^2, t^3) for t = 1/8 to 4/8, conditioned 1e3. What a
+    // row of ones at level 1 has outside them, computed from inner products, is rounding noise above the rank
+    // threshold: it must not count.
+    Eigen::Matrix<double, 5, 4> a;
+    Eigen::Matrix<double, 5, 1> b;
+    for (int i = 0; i < 4; ++i) {
+        const double t = (i + 1) / 8.0;
+        a.row(i) << 1, t, t * t, t * t * t;
+        b(i) = i + 1;
+    }
+    a.row(4).setOnes();
+    b(4) = 0;
+    hlq::Solver<> solver(5, 4);
+    solver.settings().gram_mode = true;
+    solver.settings().fold_final_level = false;
+    ASSERT_EQ(solver.set_problem(a, b, b, {4, 5}), Status::Ready);
+    ASSERT_EQ(solver.solve(), Status::Solved);
+    EXPECT_EQ(solver.rank(0), 4);
+    EXPECT_EQ(solver.rank(1), 0);
 }
 
 TEST(Gram, WarmSolvesAfterTheBoundsMove) {
