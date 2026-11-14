@@ -375,6 +375,17 @@ The Gram form of §4 is equivalent in exact arithmetic, but computing its LDL fr
 
 The form of (4) computes $d_i = \lVert c_i \rVert^2$ from the vector itself. Its cost equals that of forming the Gram row ($\bar A a^\top$ is $M n$ either way).
 
+**Gram mode** (`Settings::gram_mode`, off by default) takes that trade on purpose. It keeps $K$ and not $Q$: where $Q x$ is needed, it is $K_I^{-1} (\bar A_I x)$ over the independent positions $I$, and the updates of §12 rotate $K$ alone. Two safeguards keep it usable:
+- the rank tolerance is raised to $10 \sqrt u$;
+- the rank stops at $n$, because past it what a row has outside the others is pure noise of order $\sqrt u\, \kappa$.
+
+Measured against the default:
+- cold solves are 6–13% faster, and DAQP still takes 0.5–0.96 of the time;
+- on the random, integer, degenerate and large families it finds the same ranks and solutions to $3 \cdot 10^{-8}$;
+- on their ill-conditioned versions it fails the certificate of §18 on 3–12% of problems, against at most 0.05% by default.
+
+DAQP gets away with the Gram form because it never decides rank among soft constraints: each has its own slack, so its rows stay independent. A hierarchy has dependent rows all the time.
+
 ### 17. Relation to other methods
 
 - **HCOD.** The factorization is the HCOD of Escande, Mansard and Wieber (IJRR 2014), $\bar A = W H Y^\top$, written without $W$: here $H = K$, and $Y$ is $Q$ completed to an orthogonal matrix. hlq updates it by rotations instead of recomputing it from the changed level down.

@@ -572,6 +572,12 @@ private:
         return fold_ ? fold_store_.row(cols_ + 1) : reference_.data();
     }
 
+    /// Least rank tolerance of Gram mode: what is left of a row is known only to about sqrt(epsilon) of its
+    /// length there.
+    static Scalar gram_rank_floor() noexcept {
+        return Scalar(10) * std::sqrt(std::numeric_limits<Scalar>::epsilon());
+    }
+
     /// The rows that are factored: the rows of the problem in the coordinates of the metric.
     [[nodiscard]] detail::MatrixRef<const Scalar> factored_rows() const noexcept {
         return (identity() ? matrix_ : scaled_).block(0, 0, rows_, cols_);
@@ -704,11 +710,12 @@ private:
         // What depends on the rows (the fold's metric, the rows in its coordinates, the rank thresholds and
         // so the factorization) is redone only when they, the metric or the settings it depends on changed.
         if (rows_changed_ || fold_setting_ != settings_.fold_final_level
-            || noise_tolerance_ != settings_.rank_tolerance) {
+            || noise_tolerance_ != settings_.rank_tolerance || lq_.gram() != settings_.gram_mode) {
             rows_changed_ = false;
             factor_valid_ = false;
             fold_setting_ = settings_.fold_final_level;
             noise_tolerance_ = settings_.rank_tolerance;
+            lq_.set_gram(settings_.gram_mode);
             fold();
             if (!identity()) {
                 for (Index i = 0; i < rows_; ++i) {
@@ -728,6 +735,9 @@ private:
             }
             // Absolute: rounding noise scales with the longest row of a level, not with what is left of a
             // row.
+            const Scalar tolerance = settings_.gram_mode
+                                         ? std::max(settings_.rank_tolerance, gram_rank_floor())
+                                         : settings_.rank_tolerance;
             const detail::MatrixRef<const Scalar> rows = factored_rows();
             for (Index k = 0, begin = 0; k < levels_; ++k) {
                 const Index end = level_ends_(k);
@@ -735,7 +745,7 @@ private:
                 for (Index i = begin; i < end; ++i) {
                     longest = std::max(longest, detail::squared_norm(rows.row(i), cols_));
                 }
-                noise_(k) = settings_.rank_tolerance * std::sqrt(longest);
+                noise_(k) = tolerance * std::sqrt(longest);
                 begin = end;
             }
         }

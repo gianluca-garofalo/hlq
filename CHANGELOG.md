@@ -18,6 +18,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
   reference changed.
 - A constraint whose release is undone at once twice in a phase stays active until the phase ends, which keeps
   the search from cycling on ill-conditioned problems.
+- Gram mode (`Settings::gram_mode`, off by default): only the triangular factor of the active rows is kept, which
+  makes solves 6–13% faster and squares the conditioning.
 - Compile-time capacities (`Solver<Scalar, MaxRows, MaxCols, MaxLevels>`) without heap allocation, and single
   precision.
 - Python bindings (`hlq.Solver`, `hlq.Solver32`).

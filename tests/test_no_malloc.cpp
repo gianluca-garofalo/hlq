@@ -144,3 +144,16 @@ TEST(NoMalloc, FixedSizeSolver) {
         ASSERT_EQ(failures, 0) << "seed " << seed;
     }
 }
+
+TEST(NoMalloc, GramMode) {
+    for (const Family family : {Family::Random, Family::Large}) {
+        for (unsigned seed = 0; seed < 100; ++seed) {
+            const auto p = hlq::test::make_problem(family, seed);
+            hlq::Solver<> solver(p.rows(), p.cols());
+            solver.settings().gram_mode = true;
+            const auto [count, failures] = solve_counting(p, solver);
+            ASSERT_EQ(count, 0) << hlq::test::to_string(family) << " seed " << seed;
+            ASSERT_EQ(failures, 0) << hlq::test::to_string(family) << " seed " << seed;
+        }
+    }
+}
