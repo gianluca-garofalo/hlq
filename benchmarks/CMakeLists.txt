@@ -3,7 +3,7 @@
 if(HLQ_BUILD_BENCHMARKS)
     hlq_find_benchmark()
     add_executable(hlq_benchmarks bench_solver.cpp)
-    target_link_libraries(hlq_benchmarks PRIVATE hlq::hlq hlq_warnings benchmark::benchmark_main)
+    target_link_libraries(hlq_benchmarks PRIVATE hlq::hlq hlq_warnings Eigen3::Eigen benchmark::benchmark_main)
     target_include_directories(hlq_benchmarks PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 endif()
 

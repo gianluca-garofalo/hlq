@@ -1,7 +1,7 @@
 // Cold solves of the same problems by hlq, HierarchicalQP, LexLS and DAQP, from the data to the solution
 // (each timing includes setting up the solver).
 
-#include <daqp.hpp>
+#include <api.h>
 #include <hqp/hqp.hpp>
 #include <vector>
 
@@ -83,7 +83,9 @@ void lexls(benchmark::State& state, Family family) {
 }
 
 void daqp(benchmark::State& state, Family family) {
-    // DAQP minimizes the violations of unit rows: the rows are scaled once, outside the timing.
+    // DAQP minimizes the violations of unit rows: the rows are scaled once, outside the timing. It is called
+    // through its C API, as its Eigen interface calls it, without the conversions and slacks of that
+    // interface.
     auto list = problems(family);
     std::vector<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> rows;
     std::vector<Eigen::VectorXi> ends;
@@ -98,8 +100,25 @@ void daqp(benchmark::State& state, Family family) {
     }
     std::size_t i = 0;
     for (auto _ : state) {
-        auto result = daqp_solve(rows[i], list[i].upper, list[i].lower, ends[i]);
-        benchmark::DoNotOptimize(result.get_primal().data());
+        auto& p = list[i];
+        std::vector<double> primal(static_cast<std::size_t>(p.cols()));
+        std::vector<double> dual(static_cast<std::size_t>(p.rows()));
+        DAQPResult result;
+        result.x = primal.data();
+        result.lam = dual.data();
+        DAQPProblem qp = {static_cast<int>(p.cols()),
+                          static_cast<int>(p.rows()),
+                          0,
+                          nullptr,
+                          nullptr,
+                          rows[i].data(),
+                          p.upper.data(),
+                          p.lower.data(),
+                          nullptr,
+                          ends[i].data(),
+                          static_cast<int>(ends[i].size())};
+        daqp_quadprog(&result, &qp, nullptr);
+        benchmark::DoNotOptimize(primal.data());
         i = (i + 1) % list.size();
     }
 }

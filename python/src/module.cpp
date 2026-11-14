@@ -1,14 +1,16 @@
 // Python bindings of hlq. The package wraps _Solver (float64) and _Solver32 (float32) as hlq.Solver and
 // hlq.Solver32, converting array-likes on the way in.
 
+#include <algorithm>
+#include <cstddef>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <Eigen/Dense>
-#include <nanobind/eigen/dense.h>
 #include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
@@ -19,8 +21,36 @@ using namespace nb::literals;
 
 namespace {
 
-using Index = Eigen::Index;
+using Index = hlq::Index;
 using LevelEnds = std::vector<Index>;
+
+/// A matrix of any strides, and a contiguous vector, read in place.
+template <typename Scalar>
+using InMatrix = nb::ndarray<const Scalar, nb::ndim<2>, nb::device::cpu>;
+template <typename Scalar>
+using InVector = nb::ndarray<const Scalar, nb::ndim<1>, nb::device::cpu, nb::c_contig>;
+template <typename Scalar>
+using OutVector = nb::ndarray<nb::numpy, Scalar, nb::ndim<1>>;
+
+template <typename Scalar>
+hlq::MatrixView<Scalar> view(const InMatrix<Scalar>& a) {
+    return {a.data(), static_cast<Index>(a.shape(0)), static_cast<Index>(a.shape(1)),
+            static_cast<Index>(a.stride(0)), static_cast<Index>(a.stride(1))};
+}
+
+template <typename Scalar>
+std::span<const Scalar> view(const InVector<Scalar>& v) {
+    return {v.data(), v.shape(0)};
+}
+
+/// A copy of a result as a new NumPy array, which owns its memory.
+template <typename Scalar>
+nb::object to_numpy(std::span<const Scalar> values) {
+    auto* data = new Scalar[values.size()];
+    std::copy(values.begin(), values.end(), data);
+    nb::capsule owner(data, [](void* p) noexcept { delete[] static_cast<Scalar*>(p); });
+    return nb::cast(OutVector<Scalar>(data, {values.size()}, owner), nb::rv_policy::move);
+}
 
 /// Setup errors become ValueError, with the status as the message.
 void check(hlq::Status status) {
@@ -53,8 +83,8 @@ void bind_settings(nb::module_& m, const char* name) {
 template <typename Scalar>
 void bind_solver(nb::module_& m, const char* name, const char* doc) {
     using Solver = hlq::Solver<Scalar>;
-    using Matrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
-    using Vector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
+    using Matrix = InMatrix<Scalar>;
+    using Vector = InVector<Scalar>;
 
     nb::class_<Solver>(m, name, doc)
         .def(nb::init<Index, Index>(), "max_rows"_a, "cols"_a,
@@ -62,27 +92,25 @@ void bind_solver(nb::module_& m, const char* name, const char* doc) {
         .def(
             "set_problem",
             [](Solver& s, const Matrix& matrix, const Vector& lower, const Vector& upper,
-               const LevelEnds& ends) {
-                const Eigen::Map<const Eigen::Matrix<Index, Eigen::Dynamic, 1>> map(
-                    ends.data(), static_cast<Index>(ends.size()));
-                check(s.set_problem(matrix, lower, upper, map));
-            },
+               const LevelEnds& ends) { check(s.set_problem(view(matrix), view(lower), view(upper), ends)); },
             "matrix"_a, "lower"_a, "upper"_a, "level_ends"_a,
             "Sets the problem lower <= matrix @ x <= upper, with level k being rows [level_ends[k-1], "
             "level_ends[k]). Keeps the active set as a warm start when the structure is unchanged. Raises "
             "ValueError for invalid input.")
         .def(
-            "set_metric", [](Solver& s, const Matrix& metric) { check(s.set_metric(metric)); }, "metric"_a,
+            "set_metric", [](Solver& s, const Matrix& metric) { check(s.set_metric(view(metric))); },
+            "metric"_a,
             "Sets the symmetric positive definite metric in which the solution is closest to the reference.")
         .def(
-            "set_reference", [](Solver& s, const Vector& reference) { check(s.set_reference(reference)); },
+            "set_reference",
+            [](Solver& s, const Vector& reference) { check(s.set_reference(view(reference))); },
             "reference"_a, "Sets the point that the solution is closest to among the optima.")
         .def("reset", &Solver::reset, "Forgets the active set (the next solve starts cold).")
         .def("solve", &Solver::solve, nb::call_guard<nb::gil_scoped_release>(), "Solves; returns a Status.")
         .def_prop_ro(
-            "solution", [](const Solver& s) { return Vector(s.solution()); }, "The solution.")
+            "solution", [](const Solver& s) { return to_numpy(s.solution()); }, "The solution.")
         .def_prop_ro(
-            "violation", [](const Solver& s) { return Vector(s.violation()); },
+            "violation", [](const Solver& s) { return to_numpy(s.violation()); },
             "A x minus A x clamped to the bounds, at the solution.")
         .def_prop_ro("status", &Solver::status)
         .def_prop_ro("changes", &Solver::changes, "Active-set changes in the last solve.")
@@ -127,7 +155,7 @@ void bind_solver(nb::module_& m, const char* name, const char* doc) {
                 if (level < 0 || level > s.levels()) {
                     throw nb::index_error("level out of range");
                 }
-                return Vector(s.multipliers(level));
+                return to_numpy(s.multipliers(level));
             },
             "level"_a,
             "Multipliers of the subproblem of a level at the solution (level == levels: the final choice "

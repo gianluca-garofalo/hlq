@@ -12,7 +12,7 @@ hlq keeps all active rows of all levels in one Gram–Schmidt factorization take
 - **Exact.** Each level's least squares is solved exactly, with rank decided per level by an absolute threshold, and conflicting levels by a Householder QR rather than normal equations.
 - **Real-time friendly.** `solve()` never allocates; with compile-time capacities nothing touches the heap. Setup reports invalid input with a `Status`, and nothing throws.
 - **Warm starts.** Re-solving a problem with the same structure starts from the previous active set; re-solving the same problem needs no changes.
-- **Header-only**, depending only on Eigen 3.4. Double or single precision; Python bindings.
+- **No dependencies.** Header-only C++20 that needs only the standard library. It reads Eigen matrices, standard containers or raw memory, in double or single precision; Python bindings.
 - **Verified** with an independent optimality certificate on thousands of random problems, and against LexLS, DAQP and HierarchicalQP.
 
 ## Quick start
@@ -22,27 +22,30 @@ hlq keeps all active rows of all levels in one Gram–Schmidt factorization take
 ```cpp
 #include <hlq/hlq.hpp>
 
+#include <array>
 #include <limits>
 
 int main() {
     // Level 1: x1 <= 1. Level 2: x1 + x2 = 4. Level 3: x2 = 2 (cannot be met under level 2 with x1 <= 1).
-    Eigen::MatrixXd a(3, 2);
-    a << 1, 0,
-         1, 1,
-         0, 1;
+    const std::array<double, 6> a = {1, 0,
+                                     1, 1,
+                                     0, 1};  // row major
     const double inf = std::numeric_limits<double>::infinity();
-    Eigen::Vector3d lower(-inf, 4, 2), upper(1, 4, 2);
-    Eigen::Vector3i level_ends(1, 2, 3);  // level k is rows [level_ends(k-1), level_ends(k))
+    const std::array<double, 3> lower = {-inf, 4, 2};
+    const std::array<double, 3> upper = {1, 4, 2};
 
     hlq::Solver<> solver(/*max_rows=*/3, /*cols=*/2);
-    if (solver.set_problem(a, lower, upper, level_ends) != hlq::Status::Ready) {
+    // Level k is rows [level_ends[k-1], level_ends[k]).
+    if (solver.set_problem(hlq::MatrixView(a.data(), 3, 2), lower, upper, {1, 2, 3}) != hlq::Status::Ready) {
         return 1;
     }
     if (solver.solve() == hlq::Status::Solved) {
-        // solver.solution() == (1, 3); solver.level_cost(2) == 1
+        // solver.solution() is {1, 3}; solver.level_cost(2) == 1
     }
 }
 ```
+
+Eigen matrices and vectors can be passed as they are, as in `solver.set_problem(A, lower, upper, level_ends)`. `#include <hlq/eigen.hpp>` for `hlq::as_eigen(solver.solution())`, an Eigen view of a result.
 
 ### Python
 
@@ -83,7 +86,7 @@ FetchContent_MakeAvailable(hlq)
 target_link_libraries(your_target PRIVATE hlq::hlq)
 ```
 
-An installed Eigen 3.4 is used when found; otherwise (with `HLQ_FETCH_DEPENDENCIES=ON`, the default) its release tarball is downloaded.
+The library needs nothing else. The tests, benchmarks and comparisons use Eigen 3.4: an installed one when found, otherwise (with `HLQ_FETCH_DEPENDENCIES=ON`, the default) its release tarball is downloaded.
 
 | Option | Default | |
 |---|---|---|
@@ -105,18 +108,18 @@ builds the module with scikit-build-core and nanobind (Python 3.9 and later; one
 ## Using the solver
 
 ```cpp
-template <typename Scalar = double, int MaxRows = Eigen::Dynamic, int MaxCols = Eigen::Dynamic,
-          int MaxLevels = Eigen::Dynamic>
+template <typename Scalar = double, int MaxRows = hlq::dynamic, int MaxCols = hlq::dynamic,
+          int MaxLevels = hlq::dynamic>
 class hlq::Solver;
 ```
 
 | Call | |
 |---|---|
 | `Solver(max_rows, cols)` | allocates for up to `max_rows` constraints in `cols` variables (`Solver()` with compile-time capacities) |
-| `set_problem(A, lower, upper, level_ends)` | any Eigen expressions; returns `Status::Ready` or why the input was rejected; keeps the active set when the structure is unchanged |
+| `set_problem(A, lower, upper, level_ends)` | copies a matrix with `rows()`, `cols()` and `A(i, j)` (Eigen, `hlq::MatrixView`) and vectors with `size()` and `v[i]` (Eigen, `std::vector`, `std::span`); returns `Status::Ready` or why the input was rejected; keeps the active set when the structure is unchanged |
 | `set_metric(W)`, `set_reference(r)` | the solution minimizes $(x - r)^\top W (x - r)$ among the optima |
 | `solve()` | `Status::Solved`, or `Status::MaxChanges` when the search stopped early |
-| `solution()`, `violation()`, `level_cost(k)` | the point, $A x$ minus its clamp to the bounds, and each level's squared violation |
+| `solution()`, `violation()`, `level_cost(k)` | the point, $A x$ minus its clamp to the bounds (both `std::span`s into the solver), and each level's squared violation |
 | `activity(i)`, `rank(k)`, `multipliers(k)` | the active set, the rank of each level, the multipliers of each level's subproblem |
 | `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes` |
 | `reset()` | forgets the active set |
@@ -138,15 +141,15 @@ A final regularization level such as $x = 0$ is not needed: hlq's own choice amo
 | random with an ill-conditioned level | 32 / 0 | 8 / 0 | 0 / 0 |
 | degenerate with an ill-conditioned level | 5 / 0 | 0 / 0 | |
 
-Cold solves from data to solution (setup included), median of 5 runs, on a 2.1 GHz x86-64 VM:
+Cold solves from data to solution (setup included), median of 5 runs, on one core of a 2.1 GHz x86-64 VM (DAQP through its C API):
 
 | Family | hlq | hlq without the final $x = 0$ level | HierarchicalQP | LexLS | DAQP |
 |---|---|---|---|---|---|
-| random (2–8 variables) | 18 µs | 12 µs | 21 µs | 23 µs | 6 µs |
-| degenerate (3 variables) | 6 µs | | 7 µs | 8 µs | 3 µs |
-| large (20–40 variables) | 196 µs | 107 µs | 765 µs | 703 µs | 56 µs |
+| random (2–8 variables) | 11 µs | 7.8 µs | 16 µs | 21 µs | 4.4 µs |
+| degenerate (3 variables) | 4.1 µs | | 5.6 µs | 7.2 µs | 2.9 µs |
+| large (20–40 variables) | 163 µs | 73 µs | 659 µs | 597 µs | 53 µs |
 
-DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and seven times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
+DAQP, a dual method with softened levels, is faster; its solutions agree with the exact ones to about $10^{-6}$, and it misses the optimum on some degenerate problems. hlq is the fastest of the exact solvers: about four times as fast as HierarchicalQP and LexLS on the large family, and nine times as fast without the redundant final level. It makes fewer active-set changes than DAQP, but each costs more: hlq keeps an orthonormal basis of the active rows, which is what makes it exact on ill-conditioned levels, where DAQP keeps the factors of their Gram matrix.
 
 CI reruns both on every pull request (see the Comparisons workflow's summary). Known limits are listed at the end of [docs/algorithm.md](docs/algorithm.md).
 

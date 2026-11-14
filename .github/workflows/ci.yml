@@ -44,10 +44,7 @@ jobs:
       - name: Install and use the package
         shell: bash
         run: |
-          # Eigen was downloaded by the build: install it too, as a downstream project would find it.
-          cmake -S build/_deps/hlq_eigen-src -B build-eigen -DCMAKE_INSTALL_PREFIX="$PWD/install" \
-            -DBUILD_TESTING=OFF -DEIGEN_BUILD_DOC=OFF -DEIGEN_BUILD_PKGCONFIG=OFF
-          cmake --install build-eigen
+          # The package needs nothing else: the downstream project finds hlq alone.
           cmake --install build --config ${{ matrix.config }} --prefix "$PWD/install"
           cmake -S tests/package -B build-package -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
             -DCMAKE_PREFIX_PATH="$PWD/install" \

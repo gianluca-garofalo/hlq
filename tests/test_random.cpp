@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <hlq/eigen.hpp>
 #include <hlq/hlq.hpp>
 
 #include "support/certificate.hpp"
@@ -33,15 +34,16 @@ TEST_P(RandomProblems, AreSolvedColdAndWarm) {
         hlq::Solver<> solver(p.rows(), p.cols());
         ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
         ASSERT_EQ(solver.solve(), hlq::Status::Solved) << "seed " << seed;
-        const auto cert = hlq::test::certify(p, solver.solution());
+        const auto cert = hlq::test::certify(p, hlq::as_eigen(solver.solution()));
         EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
                                   << cert.residual;
-        const Eigen::VectorXd cold = solver.solution();
+        const Eigen::VectorXd cold = hlq::as_eigen(solver.solution());
 
         ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
         ASSERT_EQ(solver.solve(), hlq::Status::Solved);
         EXPECT_EQ(solver.changes(), 0) << "seed " << seed;
-        EXPECT_LT((solver.solution() - cold).norm(), 1e-12 * (1 + cold.norm())) << "seed " << seed;
+        EXPECT_LT((hlq::as_eigen(solver.solution()) - cold).norm(), 1e-12 * (1 + cold.norm()))
+            << "seed " << seed;
     }
 }
 
@@ -69,7 +71,7 @@ TEST_P(RandomProblems, AreSolvedFromAnotherProblemsActiveSet) {
         }
         ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
         ASSERT_EQ(solver.solve(), hlq::Status::Solved) << "seed " << seed;
-        const auto cert = hlq::test::certify(p, solver.solution());
+        const auto cert = hlq::test::certify(p, hlq::as_eigen(solver.solution()));
         EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
                                   << cert.residual;
     }
@@ -84,7 +86,7 @@ TEST_P(RandomProblems, AreSolvedInAMetric) {
         ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
         ASSERT_EQ(solver.set_metric(metric), hlq::Status::Ready);
         ASSERT_EQ(solver.solve(), hlq::Status::Solved) << "seed " << seed;
-        const auto cert = hlq::test::certify(p, solver.solution(), metric);
+        const auto cert = hlq::test::certify(p, hlq::as_eigen(solver.solution()), metric);
         EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
                                   << cert.residual;
     }
@@ -108,7 +110,7 @@ TEST(RandomProblems, OptimaWithoutAFinalRegularization) {
         ASSERT_EQ(solver.set_problem(q.matrix, q.lower, q.upper, q.level_ends), hlq::Status::Ready);
         ASSERT_EQ(solver.set_reference(reference), hlq::Status::Ready);
         ASSERT_EQ(solver.solve(), hlq::Status::Solved);
-        const auto cert = hlq::test::certify(q, solver.solution(), {}, reference);
+        const auto cert = hlq::test::certify(q, hlq::as_eigen(solver.solution()), {}, reference);
         EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
                                   << cert.residual;
     }
@@ -122,7 +124,8 @@ TEST(RandomProblems, CertificateRejectsPerturbedSolutions) {
         hlq::Solver<> solver(p.rows(), p.cols());
         ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
         ASSERT_EQ(solver.solve(), hlq::Status::Solved);
-        const Eigen::VectorXd moved = solver.solution() + 1e-3 * Eigen::VectorXd::Ones(p.cols());
+        const Eigen::VectorXd moved =
+            hlq::as_eigen(solver.solution()) + 1e-3 * Eigen::VectorXd::Ones(p.cols());
         rejected += hlq::test::certify(p, moved).optimal ? 0 : 1;
     }
     EXPECT_EQ(rejected, 500);
