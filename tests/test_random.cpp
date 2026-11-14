@@ -2,6 +2,7 @@
 
 #include <limits>
 #include <random>
+#include <string>
 
 #include <gtest/gtest.h>
 
@@ -155,5 +156,35 @@ TEST(RandomProblems, BoundsOnVariables) {
         const auto cert = hlq::test::certify(p, hlq::as_eigen(solver.solution()));
         EXPECT_TRUE(cert.optimal) << "seed " << seed << ": level " << cert.level << " unbalanced by "
                                   << cert.residual;
+    }
+}
+
+TEST(RandomProblems, IllConditionedLevelsDoNotCycle) {
+    // Without the cycle guard, each of these released one constraint and took it back, with no step in
+    // between, until max_changes. With it, each ends, cold and warm.
+    struct Case {
+        Family family;
+        unsigned seed;
+        bool certified;
+    };
+    // integer seed 1174 ends short of the certificate's optimum: its level 1 is decided by 2e-10 of cost,
+    // below the dual tolerance, as for the problems that the solver solves short of it without a cycle.
+    const Case cases[] = {{Family::Integer, 1174, false},    {Family::Integer, 4206, true},
+                          {Family::Integer, 5544, true},     {Family::Integer, 5562, true},
+                          {Family::Integer, 15949, true},    {Family::Degenerate, 1126, true},
+                          {Family::Degenerate, 10754, true}, {Family::Degenerate, 14853, true}};
+    for (const auto& [family, seed, certified] : cases) {
+        auto p = hlq::test::make_problem(family, seed);
+        hlq::test::make_ill_conditioned(p, seed);
+        const std::string label = std::string(hlq::test::to_string(family)) + " seed " + std::to_string(seed);
+        hlq::Solver<> solver(p.rows(), p.cols());
+        for (const char* start : {"cold", "warm"}) {
+            ASSERT_EQ(solver.set_problem(p.matrix, p.lower, p.upper, p.level_ends), hlq::Status::Ready);
+            ASSERT_EQ(solver.solve(), hlq::Status::Solved) << label << ' ' << start;
+            EXPECT_LE(solver.changes(), 20) << label << ' ' << start;
+            const auto cert = hlq::test::certify(p, hlq::as_eigen(solver.solution()));
+            EXPECT_TRUE(cert.optimal || !certified)
+                << label << ' ' << start << ": level " << cert.level << " unbalanced by " << cert.residual;
+        }
     }
 }
