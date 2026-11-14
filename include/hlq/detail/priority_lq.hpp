@@ -28,6 +28,10 @@ namespace hlq::detail {
  *
  * Nothing above the diagonal of K is ever written, so that part stays zero. All workspace is allocated by the
  * constructor and `prepare`; no other member allocates.
+ *
+ * In Gram mode (`set_gram`), Q is not kept: its rows at the independent positions I are K_I^-1 A_I, and Q x
+ * is computed as that, from the rows, whenever it is needed. The updates then rotate K alone, but K comes
+ * from the inner products of the rows, which square their conditioning.
  */
 template <typename Scalar, int MaxRows, int MaxCols, int MaxLevels>
 class PriorityLQ {
@@ -89,6 +93,10 @@ public:
     [[nodiscard]] MatrixRef<const Scalar> basis() const noexcept { return basis_.block(0, 0, size_, cols_); }
     /// Number of levels in the factorization: the first ones; the active rows of the others are left out.
     [[nodiscard]] Index factored() const noexcept { return factored_; }
+    /// Whether Q is left implicit (see the class); takes effect at the next `factor`.
+    void set_gram(bool gram) noexcept { gram_ = gram; }
+    /// Whether Q is left implicit, and `basis()` is not kept.
+    [[nodiscard]] bool gram() const noexcept { return gram_; }
 
     /**
      * Factors the active rows from scratch by Gram-Schmidt in priority order.
@@ -143,6 +151,7 @@ public:
         const Index k = factored_++;
         const Index begin = size_;
         begin_(k) = begin;
+        source_ = rows;
         for (Index i = first; i < last; ++i) {
             if (active(i)) {
                 place(size_++, i);
@@ -158,7 +167,9 @@ public:
             std::fill_n(coefs_.row(begin + j), size_, Scalar(0));
             entry_(begin + j) = squared_norm(level.row(j), cols_);
         }
-        if (count > 0) {
+        if (count > 0 && gram_) {
+            append_gram(k, begin, count, noise);
+        } else if (count > 0) {
             // First pass: coefficients on the directions of the levels above.
             for (Index j = 0; j < count && begin > 0; ++j) {
                 Scalar* coef = coefs_.row(begin + j);
@@ -235,24 +246,36 @@ public:
 
         Scalar* coef = scratch_.data();
         Scalar* fresh = fresh_.data();
+        source_ = rows;
         std::copy_n(rows.row(row), cols_, fresh);
         const Scalar length = squared_norm(fresh, cols_);
-        multiply(basis, fresh, coef);
-        multiply_transposed_add(Scalar(-1), basis, coef, fresh);
-        if (squared_norm(fresh, cols_) < Scalar(0.5) * length) {
-            // The first pass cancelled most of the row: a second one restores orthogonality.
-            Scalar* second = second_.data();
-            multiply(basis, fresh, second);
-            axpy(Scalar(1), second, coef, size);
-            multiply_transposed_add(Scalar(-1), basis, second, fresh);
+        Scalar outside = 0;
+        if (gram_) {
+            project(fresh, size, coef);
+            // With as many independent rows as columns, nothing is left outside them.
+            outside = independent() < cols_
+                          ? std::sqrt(std::max(length - squared_norm(coef, size), Scalar(0)))
+                          : Scalar(0);
+        } else {
+            multiply(basis, fresh, coef);
+            multiply_transposed_add(Scalar(-1), basis, coef, fresh);
+            if (squared_norm(fresh, cols_) < Scalar(0.5) * length) {
+                // The first pass cancelled most of the row: a second one restores orthogonality.
+                Scalar* second = second_.data();
+                multiply(basis, fresh, second);
+                axpy(Scalar(1), second, coef, size);
+                multiply_transposed_add(Scalar(-1), basis, second, fresh);
+            }
+            outside = std::sqrt(squared_norm(fresh, cols_));
         }
-        const Scalar outside = std::sqrt(squared_norm(fresh, cols_));
 
         // The positions from p on, in coordinates: the directions after p, plus the new one if any.
         Index dim = 0;
         for (Index j = p; j < size; ++j) {
             if (coefs_(j, j) > 0) {
-                std::copy_n(basis_.row(j), cols_, tail_basis_.row(dim));
+                if (!gram_) {
+                    std::copy_n(basis_.row(j), cols_, tail_basis_.row(dim));
+                }
                 rows_(0, dim) = coef[j];
                 for (Index t = 0; t < tail; ++t) {
                     rows_(1 + t, dim) = coefs_(p + t, j);
@@ -262,7 +285,7 @@ public:
         }
         if (outside > noise(level)) {
             Scalar* direction = tail_basis_.row(dim);
-            for (Index c = 0; c < cols_; ++c) {
+            for (Index c = 0; c < cols_ && !gram_; ++c) {
                 direction[c] = fresh[c] / outside;
             }
             rows_(0, dim) = outside;
@@ -302,7 +325,9 @@ public:
         Index dim = 0;
         for (Index j = p; j < size; ++j) {
             if (coefs_(j, j) > 0) {
-                std::copy_n(basis_.row(j), cols_, tail_basis_.row(dim));
+                if (!gram_) {
+                    std::copy_n(basis_.row(j), cols_, tail_basis_.row(dim));
+                }
                 for (Index t = 0; t < tail; ++t) {
                     rows_(t, dim) = coefs_(p + 1 + t, j);
                 }
@@ -386,9 +411,25 @@ public:
                 // The dependent positions have zero rows of Q, so their coordinates do not matter.
                 std::fill_n(coords + start + rank, dep, Scalar(0));
             }
-            multiply_transposed_add(Scalar(1), basis_.block(start, 0, rank, cols_), coords + start, part);
+            if (!gram_) {
+                multiply_transposed_add(Scalar(1), basis_.block(start, 0, rank, cols_), coords + start, part);
+            }
         }
         std::fill_n(step.data(), cols_, Scalar(0));
+        if (gram_) {
+            // Q^T coords = A_I^T K_I^-T coords: a backward substitution over the independent positions.
+            Scalar* weight = second_.data();
+            std::copy_n(coords, size_, weight);
+            for (Index p = size_ - 1; p >= 0; --p) {
+                const Scalar diagonal = coefs_(p, p);
+                if (diagonal > Scalar(0)) {
+                    weight[p] /= diagonal;
+                    axpy(-weight[p], coefs_.row(p), weight, p);
+                    axpy(weight[p], source_.row(row_(p)), step.data(), cols_);
+                }
+            }
+            return;
+        }
         for (Index k = 0; k < levels_; ++k) {
             axpy(Scalar(1), level_step_.row(k), step.data(), cols_);
         }
@@ -429,11 +470,70 @@ public:
      */
     void multipliers_of(const Scalar* gradient, RowsVector& dual) {
         Scalar* theta = theta_.data();
-        multiply(basis_.block(0, 0, size_, cols_), gradient, theta);
+        if (gram_) {
+            project(gradient, size_, theta);
+        } else {
+            multiply(basis_.block(0, 0, size_, cols_), gradient, theta);
+        }
         backward(factored_, theta, dual);
     }
 
 private:
+    /// Independent rows of the levels before `level` (of all of them, by default).
+    [[nodiscard]] Index independent(Index level = -1) const noexcept {
+        Index count = 0;
+        for (Index k = 0; k < (level < 0 ? factored_ : level); ++k) {
+            count += rank_(k);
+        }
+        return count;
+    }
+
+    /// Gram mode: c = Q x on the positions before `end`, which is K_I^-1 (A_I x) by forward substitution, and
+    /// zero at the dependent positions.
+    void project(const Scalar* x, Index end, Scalar* c) const noexcept {
+        for (Index p = 0; p < end; ++p) {
+            const Scalar diagonal = coefs_(p, p);
+            c[p] = diagonal > Scalar(0)
+                       ? (dot(source_.row(row_(p)), x, cols_) - dot(coefs_.row(p), c, p)) / diagonal
+                       : Scalar(0);
+        }
+    }
+
+    /// Gram mode: `append` of the `count` rows of level k from position `begin`, copied in `rows_`. Cholesky
+    /// with pivoting, on the inner products of the rows less those of their coefficients so far.
+    void append_gram(Index k, Index begin, Index count, const LevelsVector& noise) {
+        const MatrixRef<Scalar> level = rows_.block(begin, 0, count, cols_);
+        Scalar* norms = norms_.data();
+        for (Index j = 0; j < count; ++j) {
+            Scalar* coef = coefs_.row(begin + j);
+            project(level.row(j), begin, coef);
+            norms[j] = entry_(begin + j) - squared_norm(coef, begin);
+        }
+        for (Index j = 0; j < count; ++j) {
+            const Index p = begin + j;
+            const Index best = argmax(norms + j, count - j);
+            if (best > 0) {
+                std::swap_ranges(level.row(j), level.row(j) + cols_, level.row(j + best));
+                std::swap_ranges(coefs_.row(p), coefs_.row(p) + p, coefs_.row(p + best));
+                swap_positions(p, p + best);
+                std::swap(norms[j], norms[j + best]);
+                std::swap(entry_(p), entry_(p + best));
+            }
+            const Scalar norm = std::sqrt(std::max(norms[j], Scalar(0)));
+            if (norm <= noise(k) || independent(k) + j >= cols_) {
+                break;  // the rows left have less still: all dependent
+            }
+            coefs_(p, p) = norm;
+            for (Index l = j + 1; l < count; ++l) {
+                const Scalar on =
+                    (dot(level.row(l), level.row(j), cols_) - dot(coefs_.row(begin + l), coefs_.row(p), p))
+                    / norm;
+                coefs_(begin + l, p) = on;
+                norms[l] -= on * on;
+            }
+        }
+    }
+
     /// Backward substitution through the levels before `above`, from theta, the gradient's coordinates.
     void backward(Index above, Scalar* theta, RowsVector& dual) {
         for (Index k = above - 1; k >= 0; --k) {
@@ -545,7 +645,9 @@ private:
                     }
                     const Rotation<Scalar> g = make_rotation(rows(i, c - 1), rows(i, c));
                     rotate_strided(g, &rows(i, c - 1), &rows(i, c), tail - i, rows.stride);
-                    rotate(g, base.row(c - 1), base.row(c), cols_);
+                    if (!gram_) {
+                        rotate(g, base.row(c - 1), base.row(c), cols_);
+                    }
                     rows(i, c) = Scalar(0);
                 }
 
@@ -554,10 +656,14 @@ private:
                         for (Index l = i; l < tail; ++l) {
                             rows(l, next) = -rows(l, next);
                         }
-                        scale(Scalar(-1), base.row(next), cols_);
+                        if (!gram_) {
+                            scale(Scalar(-1), base.row(next), cols_);
+                        }
                     }
                     // Position pos takes coordinate next: its direction, and the coefficients below on it.
-                    std::copy_n(base.row(next), cols_, basis_.row(pos));
+                    if (!gram_) {
+                        std::copy_n(base.row(next), cols_, basis_.row(pos));
+                    }
                     for (Index l = i; l < tail; ++l) {
                         coefs_(p + l, pos) = rows(l, next);
                     }
@@ -567,7 +673,9 @@ private:
                     ++next;
                 } else {
                     // Dependent: what is left of it is below the rank threshold.
-                    std::fill_n(basis_.row(pos), cols_, Scalar(0));
+                    if (!gram_) {
+                        std::fill_n(basis_.row(pos), cols_, Scalar(0));
+                    }
                     if (next < dim) {
                         std::fill_n(rows.row(i) + next, dim - next, Scalar(0));
                     }
@@ -586,6 +694,8 @@ private:
     Index cols_;
     Index levels_ = 0;
     Index factored_ = 0;  // levels in the factorization
+    bool gram_ = false;   // Q left implicit
+    Rows source_{};       // the rows last factored or inserted (Gram mode reads them)
     Index size_ = 0;
     Positions row_;                           // problem row of each position
     Positions position_;                      // position of each problem row, or -1

@@ -33,6 +33,11 @@ struct Settings {
     /// Take a last level of equalities with full column rank, such as x = 0, as the choice among the optima
     /// of the levels above instead of searching it: the same solution, at no cost.
     bool fold_final_level = true;
+    /// Gram mode: keep only the triangular factor of the active rows, as DAQP does, not an orthonormal basis
+    /// of them. Each active-set change costs less, but the factor comes from inner products of the rows,
+    /// which square their conditioning: ranks are decided only to about sqrt(epsilon) (the rank tolerance is
+    /// raised to that), and ill-conditioned levels lose accuracy.
+    bool gram_mode = false;
 };
 
 }  // namespace hlq

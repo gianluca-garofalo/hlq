@@ -127,3 +127,21 @@ def test_final_level_folded_or_searched_alike():
     np.testing.assert_allclose(results[0][1], results[1][1], atol=1e-10)
     assert results[0][2] == results[1][2]
     assert "fold_final_level=True" in repr(hlq.Settings())
+
+
+def test_gram_mode_matches_the_default():
+    rng = np.random.default_rng(4)
+    a = np.vstack([rng.normal(size=(6, 4)), np.eye(4)])
+    lower = np.concatenate([rng.normal(size=6) - 1, np.zeros(4)])
+    upper = np.concatenate([lower[:6] + 0.5, np.zeros(4)])
+    solutions = []
+    for gram in (False, True):
+        solver = hlq.Solver(max_rows=10, cols=4)
+        settings = solver.settings
+        settings.gram_mode = gram
+        solver.settings = settings
+        solver.set_problem(a, lower, upper, [3, 6, 10])
+        assert solver.solve() == hlq.Status.Solved
+        solutions.append(solver.solution)
+    np.testing.assert_allclose(solutions[0], solutions[1], atol=1e-9)
+    assert "gram_mode=False" in repr(hlq.Settings())

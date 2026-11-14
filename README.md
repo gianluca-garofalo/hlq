@@ -121,12 +121,14 @@ class hlq::Solver;
 | `solve()` | `Status::Solved`, or `Status::MaxChanges` when the search stopped early |
 | `solution()`, `violation()`, `level_cost(k)` | the point, $A x$ minus its clamp to the bounds (both `std::span`s into the solver), and each level's squared violation |
 | `activity(i)`, `rank(k)`, `multipliers(k)` | the active set, the rank of each level, the multipliers of each level's subproblem |
-| `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes`, `fold_final_level` |
+| `settings()` | `feasibility_tolerance`, `rank_tolerance`, `dual_tolerance`, `max_changes`, `fold_final_level`, `gram_mode` |
 | `reset()` | forgets the active set |
 
 The defaults suit data of order one: tolerances of $10^{-9}$ in double and $10^{-5}$ in float. The rank tolerance is relative to the longest row of each level, and the dual tolerance to the largest multiplier of each subproblem.
 
 A final regularization level such as $x = 0$ costs nothing. hlq takes any last level of equalities with full column rank ($x = 0$, $x = x_{\text{prev}}$, a weighted one) as its own choice among the optima instead of searching it, with the same solution, costs, ranks and multipliers; `settings().fold_final_level = false` searches it like any other level.
+
+`settings().gram_mode = true` keeps only the triangular factor of the active rows, as DAQP does: 6–13% faster, but it squares the conditioning, so keep it for well-conditioned problems ([algorithm notes](docs/algorithm.md), §16).
 
 ## Verification and performance
 

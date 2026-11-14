@@ -75,12 +75,16 @@ void bind_settings(nb::module_& m, const char* name) {
             "fold_final_level", &Settings::fold_final_level,
             "Take a last level of equalities with full column rank, such as x = 0, as the choice among the "
             "optima instead of searching it.")
+        .def_rw(
+            "gram_mode", &Settings::gram_mode,
+            "Keep only the triangular factor of the active rows: cheaper changes, but squared conditioning.")
         .def("__repr__", [](const Settings& s) {
             std::ostringstream out;
             out << "Settings(feasibility_tolerance=" << s.feasibility_tolerance
                 << ", rank_tolerance=" << s.rank_tolerance << ", dual_tolerance=" << s.dual_tolerance
                 << ", max_changes=" << s.max_changes
-                << ", fold_final_level=" << (s.fold_final_level ? "True" : "False") << ")";
+                << ", fold_final_level=" << (s.fold_final_level ? "True" : "False")
+                << ", gram_mode=" << (s.gram_mode ? "True" : "False") << ")";
             return out.str();
         });
 }
